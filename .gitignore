@@ -1,0 +1,38 @@
+# env
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# data
+data/
+!data/.gitkeep
+
+# model files
+*.pth
+*.pt
+*.ckpt
+
+# MLflow logs and artifacts
+mlruns/
+mlartifacts/
+
+# DVC local cache
+.dvc/cache/
+.dvc/tmp/
+
+# env files
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
