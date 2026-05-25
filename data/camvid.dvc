@@ -1,0 +1,6 @@
+outs:
+- md5: 30424acbbfd275aad68c44fb699416c2.dir
+  size: 186849579
+  nfiles: 1405
+  hash: md5
+  path: camvid
