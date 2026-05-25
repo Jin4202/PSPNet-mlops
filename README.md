@@ -25,8 +25,7 @@ Training → Serving → Monitoring → Automated Retraining.
 
 ### 1. Clone
 ```bash
-cd /workspace
-git clone https://github.com/<your-id>/PSPNet_mlops.git
+git clone https://github.com/Jin4202/PSPNet-mlops.git
 cd PSPNet_mlops
 ```
 
@@ -41,6 +40,7 @@ pip install torch torchvision mlflow pyyaml dvc dvc-gs pillow numpy --ignore-ins
 scp ~/.config/gcloud/application_default_credentials.json \
   root@<runpod-ip>:/root/.config/gcloud/application_default_credentials.json
 ```
+-- Fix later be universial
 
 ### 4. Data
 ```bash
