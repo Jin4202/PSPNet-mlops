@@ -10,7 +10,7 @@ __pycache__/
 .Python
 
 # data
-data/
+data/camvid/
 !data/.gitkeep
 
 # model files
