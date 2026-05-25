@@ -7,13 +7,16 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
 
 
-def parse_list(list_path):
+def parse_list(list_path, data_root="data/camvid"):
     items = []
     with open(list_path) as f:
         for line in f:
             parts = line.strip().split()
             if len(parts) == 2:
-                items.append((parts[0], parts[1]))
+                # /SegNet/CamVid/train/xxx.png → data/camvid/train/xxx.png
+                img = os.path.join(data_root, parts[0].replace("/SegNet/CamVid/", ""))
+                lbl = os.path.join(data_root, parts[1].replace("/SegNet/CamVid/", ""))
+                items.append((img, lbl))
     return items
 
 
