@@ -35,12 +35,36 @@ pip install torch torchvision mlflow pyyaml dvc dvc-gs pillow numpy --ignore-ins
 ```
 
 ### 3. GCS Auth
+
+**Step 1 — Install gcloud CLI (local)**
 ```bash
-# Run on local Mac
-scp ~/.config/gcloud/application_default_credentials.json \
+brew install --cask google-cloud-sdk
+```
+
+**Step 2 — Login & project setup (local)**
+```bash
+gcloud auth login
+gcloud config set project <project-id>
+gcloud auth application-default login
+gcloud auth application-default set-quota-project <project-id>
+```
+
+> project-id check: `gcloud projects describe <project-number> --format="value(projectId)"`
+
+**Step 3 — Copy credentials to RunPod (local)**
+```bash
+# RunPod SSH information: Pod → Connect → SSH over exposed TCP
+# Ex: ssh root@69.30.85.12 -p 22166 -i ~/.ssh/id_ed25519
+
+# RunPod directory create
+ssh root@<runpod-ip> -p <runpod-port> -i ~/.ssh/id_ed25519 \
+  "mkdir -p /root/.config/gcloud"
+
+# credentials copy
+scp -P <runpod-port> -i ~/.ssh/id_ed25519 \
+  ~/.config/gcloud/application_default_credentials.json \
   root@<runpod-ip>:/root/.config/gcloud/application_default_credentials.json
 ```
--- Fix later be universial
 
 ### 4. Data
 ```bash
@@ -56,6 +80,8 @@ mlflow server \
   --default-artifact-root ./mlartifacts \
   --allowed-hosts "*"
 ```
+
+> RunPod MLflow UI: Pod → Connect → HTTP 5000
 
 ### 6. Train (Terminal B)
 ```bash
