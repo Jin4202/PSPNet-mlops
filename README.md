@@ -22,13 +22,13 @@ Training → Serving → Monitoring → Automated Retraining.
 - [x] **Best Val mIoU: 0.5597**
 
 ### Week 2 — Training Pipeline Automation 🔄
-- [ ] Prefect install + local server running
-- [ ] `flows/training_flow.py` — Prefect Flow with 5 tasks
-  - [ ] `load_data_task`
-  - [ ] `prepare_model_task`
-  - [ ] `train_model_task`
-  - [ ] `evaluate_model_task`
-  - [ ] `register_model_task`
+- [x] Prefect install + local server running
+- [x] `flows/training_flow.py` — Prefect Flow with 5 tasks
+  - [x] `load_data_task`
+  - [x] `prepare_model_task`
+  - [x] `train_model_task`
+  - [x] `evaluate_model_task`
+  - [x] `register_model_task`
 - [ ] Validation Gate — block Model Registry registration when mIoU is below threshold
 - [ ] `configs/config.yaml` refactor (add `validation_gate` section)
 - [ ] Prefect Deployment created (`prefect deploy`)
