@@ -29,20 +29,20 @@ Training → Serving → Monitoring → Automated Retraining.
   - [x] `train_model_task`
   - [x] `evaluate_model_task`
   - [x] `register_model_task`
-- [ ] Validation Gate — block Model Registry registration when mIoU is below threshold
-- [ ] `configs/config.yaml` refactor (add `validation_gate` section)
-- [ ] Prefect Deployment created (`prefect deploy`)
-- [ ] Single-command execution verified: `prefect deployment run training-flow/pspnet-training`
-- [ ] Flow run history visible in Prefect UI
+- [x] Validation Gate — block Model Registry registration when mIoU is below threshold
+- [x] `configs/config.yaml` refactor (add `validation_gate` section)
+- [x] Prefect Deployment created (`prefect deploy`)
+- [x] Single-command execution verified: `prefect deployment run training-flow/pspnet-training`
+- [x] Flow run history visible in Prefect UI
 
 ### Week 3 — Serving API + CI/CD ⬜
-- [ ] FastAPI inference endpoint (`/predict`: image upload → segmentation mask)
-- [ ] Multi-stage Docker build (minimized image size)
-- [ ] Inference time included in API response
-- [ ] GitHub Actions workflow — push → lint/test → Docker build → GCR push → Cloud Run deploy
-- [ ] Unit tests (preprocessing, API endpoint)
-- [ ] Model validation gate in CI/CD pipeline
-- [ ] GCP Cloud Run deployment verified
+- [x] FastAPI inference endpoint (`/predict`: image upload → segmentation mask)
+- [x] Multi-stage Docker build (minimized image size)
+- [x] Inference time included in API response
+- [x] GitHub Actions workflow — push → lint/test → Docker build → GCR push → Cloud Run deploy
+- [x] Unit tests (preprocessing, API endpoint)
+- [x] Model validation gate in CI/CD pipeline
+- [x] GCP Cloud Run deployment verified
 
 ### Week 4 — Monitoring + Drift Detection + Auto-Retraining ⬜
 - [ ] Prometheus metrics exposed (request volume, latency, error rate)
