@@ -43,3 +43,12 @@ mlflow:
   experiment_name: "pspnet-camvid"
   run_name: "baseline-v1"
   model_name: "pspnet-camvid"
+
+validation_gate:
+  min_miou: 0.55
+  enabled: true
+
+prefect:
+  flow_name: training-flow
+  deployment_name: pspnet-training
+  work_pool_name: pspnet-pool
