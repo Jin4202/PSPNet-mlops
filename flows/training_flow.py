@@ -23,7 +23,6 @@ Usage (RunPod):
 """
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -104,10 +103,8 @@ def prepare_model_task(cfg: dict) -> tuple:
     train_cfg = cfg["training"]
 
     model = PSPNet(
-        layers=50,
         num_classes=model_cfg["num_classes"],
         zoom_factor=model_cfg["zoom_factor"],
-        pretrained=model_cfg["pretrained_backbone"],
     ).to(device)
 
     # Split parameters: backbone vs. head

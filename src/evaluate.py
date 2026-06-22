@@ -29,7 +29,9 @@ def evaluate(model, loader, cfg, device):
             p = pred.cpu().numpy().squeeze()
             t = lbls.numpy().squeeze()
             i, u, gt = iou_cpu(p, t, nc, ignore)
-            total_i += i; total_u += u; total_t += gt
+            total_i += i
+            total_u += u
+            total_t += gt
 
     valid = total_u > 0
     iou   = np.where(valid, total_i / np.where(valid, total_u, 1), 0)

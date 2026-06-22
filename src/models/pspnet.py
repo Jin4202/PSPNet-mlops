@@ -61,7 +61,8 @@ class PSPNet(nn.Module):
         x = self.layer0(x)
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x);  x3 = x
+        x = self.layer3(x)
+        x3 = x
         x = self.layer4(x)
         x = self.ppm(x)
         main = F.interpolate(self.main_cls(x), size=(H, W), mode='bilinear', align_corners=True)

@@ -1,7 +1,11 @@
-import os, sys, argparse, yaml, time
+import os
+import sys
+import argparse
+import yaml
 import torch
 import torch.nn as nn
-import mlflow, mlflow.pytorch
+import mlflow
+import mlflow.pytorch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.models.pspnet import build_model

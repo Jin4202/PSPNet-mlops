@@ -29,6 +29,9 @@ mlartifacts/
 # env files
 .env
 
+# credentials
+gcp-key.json
+
 # OS files
 .DS_Store
 Thumbs.db

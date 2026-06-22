@@ -2,3 +2,5 @@
     remote = myremote
 ['remote "myremote"']
     url = gs://pspnet-mlops-dvc/store
+    projectname = bamboo-climate-497404-a7
+    credentialpath = /workspace/PSPNet-mlops/gcp-key.json
