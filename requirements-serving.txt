@@ -1,0 +1,13 @@
+# Minimal dependency set for app/ (FastAPI inference service).
+# Subset of requirements.txt — excludes training/orchestration-only deps
+# (dvc, prefect, mlflow tracking server extras, etc.) to keep the serving
+# image small. Versions must stay in sync with requirements.txt.
+fastapi==0.136.1
+uvicorn==0.47.0
+python-multipart==0.0.32
+pillow==12.2.0
+numpy==2.4.6
+PyYAML==6.0.3
+mlflow==3.12.0
+torch==2.12.0
+torchvision==0.27.0

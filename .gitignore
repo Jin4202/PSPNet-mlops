@@ -38,3 +38,4 @@ Thumbs.db
 .idea/mlflow.db
 mlartifacts/
 .ipynb_checkpoints/
+PROGRESS.md

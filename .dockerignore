@@ -1,0 +1,15 @@
+.git
+.venv
+.dvc
+data/
+checkpoints/
+mlartifacts/
+mlflow.db
+*.pth
+__pycache__/
+*.pyc
+.pytest_cache
+tests/
+PROGRESS.md
+README.md
+flows/
