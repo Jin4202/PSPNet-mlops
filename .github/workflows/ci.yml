@@ -95,6 +95,15 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Pull model checkpoint from DVC
+        run: |
+          pip install --no-cache-dir "dvc[gs]"
+          dvc pull checkpoints/best.pth.dvc
+
       - name: Build and push image
         run: |
           docker build -t "${IMAGE}" .

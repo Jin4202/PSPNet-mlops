@@ -2,10 +2,11 @@
 .venv
 .dvc
 data/
-checkpoints/
+checkpoints/*
+!checkpoints/best.pth
 mlartifacts/
 mlflow.db
-*.pth
+*.pth.dvc
 __pycache__/
 *.pyc
 .pytest_cache
