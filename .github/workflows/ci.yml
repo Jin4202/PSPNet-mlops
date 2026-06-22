@@ -30,9 +30,37 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
+  validation-gate:
+    runs-on: ubuntu-latest
+    needs: [test]
+    # No MLflow server is reachable from CI yet, so this job is a no-op
+    # until MLFLOW_TRACKING_URI is configured as a repo secret. Once it
+    # is, this becomes a hard gate: docker-build only runs if it passes.
+    if: ${{ secrets.MLFLOW_TRACKING_URI != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-dev.txt
+      - name: Check validation gate
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MODEL_STAGE_OR_VERSION: ${{ vars.MODEL_STAGE_OR_VERSION }}
+        run: python scripts/check_validation_gate.py
+
   docker-build:
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, validation-gate]
+    if: |
+      always() &&
+      needs.lint.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs.validation-gate.result == 'success' || needs.validation-gate.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
       - name: Build serving image

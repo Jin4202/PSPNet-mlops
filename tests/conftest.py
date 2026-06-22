@@ -23,6 +23,10 @@ def cfg():
             "tracking_uri": "http://localhost:5000",
             "model_name": "pspnet-camvid",
         },
+        "validation_gate": {
+            "min_miou": 0.55,
+            "enabled": True,
+        },
     }
 
 
