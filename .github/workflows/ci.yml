@@ -135,4 +135,4 @@ jobs:
           region: ${{ vars.GCP_REGION }}
           project_id: ${{ vars.GCP_PROJECT_ID }}
           image: ${{ env.IMAGE }}
-          flags: --allow-unauthenticated
+          flags: --allow-unauthenticated --memory=2Gi --cpu=2
