@@ -1,0 +1,6 @@
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# sys.path.insert(...) must run before these imports so src/ is importable.
+"flows/training_flow.py" = ["E402"]

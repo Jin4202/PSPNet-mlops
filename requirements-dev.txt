@@ -1,0 +1,4 @@
+# Test-only dependencies. Not needed by the training or serving runtime.
+-r requirements-serving.txt
+pytest==8.3.4
+httpx==0.28.1
