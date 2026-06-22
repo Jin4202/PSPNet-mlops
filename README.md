@@ -39,10 +39,11 @@ Training → Serving → Monitoring → Automated Retraining.
 - [x] FastAPI inference endpoint (`/predict`: image upload → segmentation mask)
 - [x] Multi-stage Docker build (minimized image size)
 - [x] Inference time included in API response
-- [x] GitHub Actions workflow — push → lint/test → Docker build → GCR push → Cloud Run deploy
+- [x] GitHub Actions workflow — push → lint/test → Docker build → Artifact Registry push → Cloud Run deploy
 - [x] Unit tests (preprocessing, API endpoint)
 - [x] Model validation gate in CI/CD pipeline
-- [x] GCP Cloud Run deployment verified
+- [x] Cloud Run deploy job wired up via Workload Identity Federation (no static keys)
+- [x] GCP Cloud Run deployment verified live
 
 ### Week 4 — Monitoring + Drift Detection + Auto-Retraining ⬜
 - [ ] Prometheus metrics exposed (request volume, latency, error rate)
@@ -142,6 +143,12 @@ mlflow server \
 ```bash
 python src/train.py --config configs/config.yaml
 ```
+
+---
+
+## Deployment
+
+On every push to `main`, GitHub Actions builds the serving image, pushes it to Artifact Registry, and deploys it to Cloud Run (`pspnet-serving`, `us-central1`). Authentication uses Workload Identity Federation — GitHub's OIDC token is exchanged for short-lived GCP credentials, so no service-account key is stored in the repo. See `dev/dev_note.md` for the full setup (IAM roles, WIF pool/provider, repo variables).
 
 ---
 
