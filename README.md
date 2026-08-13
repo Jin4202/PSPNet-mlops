@@ -61,9 +61,10 @@ Serving throughput (100 requests, concurrency 10). The full concurrency sweep is
 | RunPod GPU (RTX PRO 4500) | 100/100 | 7.45 req/s | 3.19s |
 
 The RunPod GPU pod holds concurrency 10 with zero failures. The current Cloud Run
-config does not. It starts shedding requests with HTTP 503 well before concurrency 10.
-[Benchmarking](#benchmarking) has the full breakdown and a likely cold-start explanation
-for the Cloud Run cliff.
+config does not. Cloud Run's own logs confirm this is an out-of-memory crash loop
+(`--memory=2Gi` isn't enough for 10 concurrent PSPNet forward passes), not a
+request-queue or admission-control limit. [Benchmarking](#benchmarking) has the full
+breakdown.
 
 ---
 
@@ -225,14 +226,24 @@ run. Full rows are in `results/benchmarks.csv`.
 | 2 | 100/100 | 0.83 req/s | 1.67s / 23.92s / 23.92s |
 | 10 | 11/100 | 0.71 req/s | 14.10s / 15.69s / 15.69s (89 requests failed with HTTP 503) |
 
-Concurrency 1 is clean and predictable. At concurrency 2, throughput barely improves but
-one request spikes to about 24s, which looks more like Cloud Run cold-starting a second
-instance mid-run (a full container boot plus model load) than CPU contention inside a
-single instance. At concurrency 10 the single `--cpu=2` instance cannot keep up and
-Cloud Run starts shedding load with 503s. The real concurrency ceiling for this
-deployment sits well below 10, not the ~80 requests per instance that Cloud Run defaults
-to. I have not root-caused this against actual Cloud Run logs or metrics yet, so it is
-worth checking before relying on this deployment under real concurrent load.
+Concurrency 1 is clean and predictable. At concurrency 2, throughput barely improves and
+one request spikes to about 24s. Cloud Run's own logs confirm this is a genuine cold
+start, not CPU contention: `Starting new instance. Reason: AUTOSCALING` fires right
+after that request, and the service actually churns through 3 instances over the course
+of the 100-request run despite never running more than 2 requests at once.
+
+At concurrency 10, the root cause is confirmed directly from Cloud Run's logs:
+**out-of-memory crash-looping**, not simple request-queue overload. The logs show
+explicit `Memory limit of 2048 MiB exceeded` errors, each followed by `the container
+instance was found to be using too much memory and was terminated`, then
+`Starting new instance`. Over the ~2.5 minutes this run took, that cycle repeated
+**9 times**: 9 OOM kills and 9 fresh cold-started instances, each one immediately hit by
+more of the still-queued concurrent requests before it could stabilize.
+`containerConcurrency` is 80 and `maxScale` is 20, so Cloud Run's own admission control
+was never the bottleneck; a full ResNet-50/PSPNet forward pass under 10-way concurrency
+simply doesn't fit in `--memory=2Gi`. The fix is straightforward: raise the memory limit
+(`gcloud run services update pspnet-serving --memory=4Gi` or higher) and re-run this
+benchmark, just not yet done here.
 
 **Live RunPod GPU results.** 100 requests, RTX PRO 4500, same test image each run. Full
 rows are in `results/benchmarks.csv`.
