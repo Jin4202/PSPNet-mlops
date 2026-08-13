@@ -61,7 +61,7 @@ def load_model(cfg: dict, device: torch.device):
             model = mlflow.pytorch.load_model(model_uri, map_location=device)
             model.to(device).eval()
             return model, f"mlflow:{model_uri}"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- any MLflow failure mode should fall back to the local checkpoint
             mlflow_error = exc
     else:
         mlflow_error = ConnectionError(f"MLflow tracking server unreachable at '{tracking_uri}'")

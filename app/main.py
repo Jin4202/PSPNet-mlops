@@ -55,7 +55,7 @@ def health():
 
 
 @app.post("/predict", response_model=PredictResponse)
-async def predict(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...)):  # noqa: B008 -- FastAPI's required DI pattern
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
 

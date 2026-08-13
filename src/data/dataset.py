@@ -1,10 +1,11 @@
 import os
 import random
+
 import numpy as np
-from PIL import Image
 import torch
-from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
 
 def parse_list(list_path, data_root="data/camvid"):

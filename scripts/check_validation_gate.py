@@ -15,8 +15,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.model_loader import _is_reachable, load_config  # noqa: E402
-from mlflow.tracking import MlflowClient  # noqa: E402
+from mlflow.tracking import MlflowClient
+
+from app.model_loader import _is_reachable, load_config
 
 
 def get_best_val_miou(model_name: str, stage: str) -> tuple[float, str]:

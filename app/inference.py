@@ -39,7 +39,7 @@ def preprocess(image: Image.Image, cfg: dict) -> torch.Tensor:
 
     w, h = image.size
     ratio = short / min(w, h)
-    new_w, new_h = int(round(w * ratio)), int(round(h * ratio))
+    new_w, new_h = round(w * ratio), round(h * ratio)
     image = image.resize((new_w, new_h), Image.BILINEAR)
 
     arr = np.asarray(image, dtype=np.float32) / 255.0
