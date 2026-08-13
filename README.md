@@ -7,21 +7,25 @@ Training → Serving → Monitoring → Automated Retraining.
 
 ## Progress
 
-### Week 1 — Foundation: Experiment Tracking + Version Control ✅
-- [x] GitHub repo setup + project structure
+### Model
 - [x] `configs/config.yaml` — centralized hyperparameter management
 - [x] `src/models/resnet.py` — ResNet-50 (Deep Base + Dilated Conv)
 - [x] `src/models/pspnet.py` — PSPNet + PPM
 - [x] `src/data/dataset.py` — CamVid dataloader + augmentation pipeline
 - [x] `src/evaluate.py` — mIoU evaluation
-- [x] `src/train.py` — training loop + MLflow instrumentation (hyperparameters, mIoU, loss curves)
-- [x] DVC init + GCS remote connected (`gs://pspnet-mlops-dvc`)
-- [x] CamVid dataset `dvc push` (1,406 files) + `dvc pull` reproducibility verified
+- [x] `src/train.py` — training loop
 - [x] Baseline training complete (100 epochs, RunPod A40)
-- [x] MLflow Model Registry registered (`pspnet-camvid v1`)
 - [x] **Best Val mIoU: 0.5597**
 
-### Week 2 — Training Pipeline Automation 🔄
+### Data Version Control
+- [x] DVC init + GCS remote connected (`gs://pspnet-mlops-dvc`)
+- [x] CamVid dataset `dvc push` (1,406 files) + `dvc pull` reproducibility verified
+
+### Experiment Tracking
+- [x] MLflow instrumentation in `src/train.py` (hyperparameters, mIoU, loss curves)
+- [x] MLflow Model Registry registered (`pspnet-camvid v1`)
+
+### Pipeline Orchestration
 - [x] Prefect install + local server running
 - [x] `flows/training_flow.py` — Prefect Flow with 5 tasks
   - [x] `load_data_task`
@@ -35,27 +39,33 @@ Training → Serving → Monitoring → Automated Retraining.
 - [x] Single-command execution verified: `prefect deployment run training-flow/pspnet-training`
 - [x] Flow run history visible in Prefect UI
 
-### Week 3 — Serving API + CI/CD ⬜
+### Serving
 - [x] FastAPI inference endpoint (`/predict`: image upload → segmentation mask)
 - [x] Multi-stage Docker build (minimized image size)
 - [x] Inference time included in API response
-- [x] GitHub Actions workflow — push → lint/test → Docker build → Artifact Registry push → Cloud Run deploy
 - [x] Unit tests (preprocessing, API endpoint)
+- [ ] Fix `/predict` serializing concurrent requests — offload inference off the event loop (`run_in_threadpool` or multiple uvicorn workers); see "Benchmarking" section
+
+### CI/CD & Deployment
+- [x] GitHub repo setup + project structure
+- [x] GitHub Actions workflow — push → lint/test → Docker build → Artifact Registry push → Cloud Run deploy
 - [x] Model validation gate in CI/CD pipeline
 - [x] Cloud Run deploy job wired up via Workload Identity Federation (no static keys)
 - [x] GCP Cloud Run deployment verified live
+- [ ] Cloud deployment stability verified
 
-### Week 4 — Monitoring + Drift Detection + Auto-Retraining ⬜
+### Monitoring
 - [ ] Prometheus metrics exposed (request volume, latency, error rate)
 - [ ] Grafana dashboard configured
+
+### Drift Detection & Auto-Retraining
 - [ ] Evidently AI — input distribution drift monitoring + threshold definition
 - [ ] Prefect Flow auto-triggered when drift threshold is exceeded
 - [ ] Champion-Challenger — retrained model promoted to production only when it outperforms incumbent
 - [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
 - [ ] End-to-end integration test (drift → retraining → evaluation → deployment, fully automated)
 
-### Week 5 — Portfolio Finalization ⬜
-- [ ] Cloud deployment stability verified
+### Portfolio / Documentation
 - [ ] Architecture diagram created + added to top of README
 - [ ] README finalized (problem → architecture → components → result metrics)
 - [ ] Demo video recorded (3–5 min: normal inference → drift event → automated retraining)
@@ -124,6 +134,28 @@ On every push to `main`, GitHub Actions builds the serving image, pushes it to A
 
 ---
 
+## Benchmarking
+
+`scripts/load_test.py` fires a pack of concurrent requests at `/predict` and reports
+measured throughput (req/s) and latency percentiles. Works against a local server or a
+live Cloud Run URL:
+
+```bash
+python scripts/load_test.py \
+  --url http://localhost:8000/predict \
+  --image data/camvid/test/0001TP_008550.png \
+  --requests 100 --concurrency 10
+```
+
+**Known limitation**: `/predict` is `async def` but runs PyTorch inference synchronously
+inline rather than offloading it to a thread pool. On a single uvicorn worker this
+serializes requests — throughput stays flat as concurrency increases while per-request
+latency grows instead (measured: ~5 req/s at both concurrency 1 and 12, with p99 latency
+going from 0.2s to 2.4s). Fixing this (e.g. `run_in_threadpool`, or multiple uvicorn
+workers) is unstarted — tracked under "Serving" in the Progress checklist above.
+
+---
+
 ## Project Structure
 
 ```
@@ -134,7 +166,7 @@ PSPNet_mlops/
 │   ├── camvid/            # CamVid dataset (DVC managed)
 │   └── camvid.dvc         # DVC pointer
 ├── flows/
-│   └── training_flow.py   # Prefect training pipeline (Week 2+)
+│   └── training_flow.py   # Prefect training pipeline
 ├── src/
 │   ├── models/
 │   │   ├── resnet.py      # ResNet-50 backbone (deep base + dilated)
