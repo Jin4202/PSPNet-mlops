@@ -32,8 +32,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 WORKDIR /workspace
 
 # Only the dependency manifest is copied — no source code, no secrets.
+# --ignore-installed blinker: the base image ships blinker via distutils (apt), which
+# pip can't cleanly uninstall/upgrade — same workaround already documented in
+# README.md's local Quickstart install step.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --ignore-installed blinker -r requirements.txt
 
 COPY runpod/setup.sh /usr/local/bin/setup.sh
 RUN chmod +x /usr/local/bin/setup.sh
