@@ -63,7 +63,14 @@ it private avoids exposing the project's setup unnecessarily.
 ## Per-pod flow
 
 **First pod on a given volume (one-time):**
-1. Launch a pod from `jinseokheo/pspnet-runpod:latest`, with a Network Volume mounted at `/workspace`.
+1. Launch a pod from `jinseokheo/pspnet-runpod:latest`, with a Network Volume mounted at
+   `/workspace`. Set **Container Disk to at least 40-50GB** — the image itself is ~13GB,
+   and a too-small Container Disk can cause the image to only partially extract, silently
+   missing files (this happened: `gcloud`/`gh`/`dvc`/`mlflow` all appeared "not found" on
+   a pod with a 20GB disk, despite being genuinely present in the image — confirmed via a
+   local `docker run` of the exact same image). Container Disk is separate from the
+   Network Volume: it's the pod's own ephemeral root filesystem that has to hold and run
+   the image, not the persistent `/workspace` mount.
 2. SSH in (Pod → Connect → SSH over exposed TCP).
 3. Upload `secrets.env` to `/workspace/secrets.env` (paste into `nano secrets.env`, or `scp`).
 4. Run `setup.sh`.

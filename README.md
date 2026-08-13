@@ -99,7 +99,9 @@ repo + DVC data — no browser-based auth flow needed on the pod. Full one-time 
 
 **First pod on a given Network Volume** (one-time — `secrets.env` and the DVC cache
 persist on the volume across future pods, so this isn't a repeat-every-time step):
-1. Launch a pod from the built image, with a Network Volume mounted at `/workspace`.
+1. Launch a pod from the built image, with a Network Volume mounted at `/workspace` and
+   **Container Disk set to at least 40-50GB** (too small and the image can silently only
+   partially extract — see `docs/runpod_setup.md`).
 2. SSH in (Pod → Connect → SSH over exposed TCP).
 3. Copy `runpod/secrets.env.example` to `secrets.env` locally, fill in your GCP
    service-account key (see `docs/runpod_setup.md`), and upload it to

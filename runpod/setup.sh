@@ -46,6 +46,10 @@ fi
 
 gcloud auth activate-service-account --key-file="${GCP_KEY_PATH}"
 log "GCP auth OK ($(gcloud config get-value account 2>/dev/null))."
+log "Note: GOOGLE_APPLICATION_CREDENTIALS is only exported in this script's process."
+log "  A NEW shell (e.g. a fresh SSH session) picks it up automatically via ~/.bashrc."
+log "  In THIS shell, if you run dvc/gcloud commands manually after this script exits, run:"
+log "    export GOOGLE_APPLICATION_CREDENTIALS=\"${GCP_KEY_PATH}\""
 
 # ── GitHub auth (optional — repo is public, only needed for push / gh CLI) ──
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
