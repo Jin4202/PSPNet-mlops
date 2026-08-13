@@ -52,18 +52,18 @@ Only needed when `requirements.txt` changes — not for ordinary code changes, w
 `setup.sh` pulls fresh at pod start instead.
 
 ```bash
-docker build -f runpod/Dockerfile -t <registry>/pspnet-runpod:latest .
-docker push <registry>/pspnet-runpod:latest
+docker build -f runpod/Dockerfile -t jinseokheo/pspnet-runpod:latest .
+docker push jinseokheo/pspnet-runpod:latest
 ```
 
-Push to a **private** registry (or a private Docker Hub repo). The image itself never
+Make `jinseokheo/pspnet-runpod` a **private** Docker Hub repo. The image itself never
 contains secrets by design — `requirements.txt` is the only thing baked in — but keeping
 it private avoids exposing the project's setup unnecessarily.
 
 ## Per-pod flow
 
 **First pod on a given volume (one-time):**
-1. Launch a pod from `<registry>/pspnet-runpod:latest`, with a Network Volume mounted at `/workspace`.
+1. Launch a pod from `jinseokheo/pspnet-runpod:latest`, with a Network Volume mounted at `/workspace`.
 2. SSH in (Pod → Connect → SSH over exposed TCP).
 3. Upload `secrets.env` to `/workspace/secrets.env` (paste into `nano secrets.env`, or `scp`).
 4. Run `setup.sh`.
