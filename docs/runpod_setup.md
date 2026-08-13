@@ -86,18 +86,38 @@ Quickstart) once it finishes.
 ## Running the serving API on a pod (for benchmarking)
 
 The pod normally only runs training — the FastAPI app has never been started there.
-`fastapi`/`uvicorn` are already in `requirements.txt` (installed by `runpod/Dockerfile`),
-so no image change is needed to also serve from the pod, e.g. to benchmark GPU inference
-against the Cloud Run deployment with `scripts/load_test.py`.
+`fastapi`/`uvicorn` are in `requirements.txt`, which `runpod/Dockerfile` installs, so in
+principle no image change is needed to also serve from the pod, e.g. to benchmark GPU
+inference against the Cloud Run deployment with `scripts/load_test.py`.
+
+**In practice, as of 2026-08-13 the currently-pushed `jinseokheo/pspnet-runpod:latest`
+image is stale** relative to `requirements.txt` — it predates `fastapi`/`uvicorn` being
+added and has `torch==2.4.1+cu124` baked in instead of the pinned `2.12.0`. That old torch
+build threw `CUDA error: no kernel image is available for execution on the device` on
+every request when tested against an RTX PRO 4500 pod (a newer GPU architecture than
+`2.4.1+cu124` supports) — not a resource/concurrency problem, every request failed
+identically. **Fix this properly by rebuilding and repushing the image** (see "Building
+and pushing the image" above) so future pods don't need manual patching. Until then, patch
+a running pod manually:
+```bash
+python3 -m pip install --ignore-installed blinker \
+  fastapi uvicorn python-multipart pillow numpy PyYAML mlflow prometheus-fastapi-instrumentator
+python3 -m pip install torch==2.12.0 torchvision==0.27.0
+```
+(`--ignore-installed blinker` works around the same distutils-uninstall conflict as the
+image build itself; the torch reinstall pulls in kernel support for newer GPU
+architectures — confirm with `nvidia-smi --query-gpu=name,compute_cap --format=csv` if a
+future pod hits the same CUDA error on a different GPU model.)
 
 1. On the pod (after `setup.sh` has run at least once, so `checkpoints/best.pth` exists
    from training):
    ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
-   Serves from `checkpoints/best.pth` by default (`CHECKPOINT_PATH` in
-   `app/model_loader.py`). Set `MLFLOW_TRACKING_URI=http://localhost:5000` first to serve
-   from the pod's own MLflow registry instead, if one is running.
+   (`-m uvicorn` avoids relying on the script being on `PATH`.) Serves from
+   `checkpoints/best.pth` by default (`CHECKPOINT_PATH` in `app/model_loader.py`). Set
+   `MLFLOW_TRACKING_URI=http://localhost:5000` first to serve from the pod's own MLflow
+   registry instead, if one is running.
 2. Expose port 8000 externally — same mechanism as MLflow (5000) and Jupyter (8888): Pod
    → Edit Pod → add HTTP Port 8000. This may require a pod restart if the port list isn't
    live-editable; the Network Volume, `secrets.env`, and DVC cache all persist across a

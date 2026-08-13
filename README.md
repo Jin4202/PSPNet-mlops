@@ -180,6 +180,57 @@ depends on the deployment's actual CPU allocation (Cloud Run currently runs `--c
 very different oversubscription math than this 11-core dev machine) and wasn't tuned for
 it. Revisit if concurrent throughput becomes a real bottleneck in practice.
 
+**Live Cloud Run results** (100 requests, `--cpu=2 --memory=2Gi`, same test image each
+run — full rows in `results/benchmarks.csv`):
+
+| Concurrency | Success | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|
+| 1 | 100/100 | 0.62 req/s | 1.59s / 1.92s / 1.92s |
+| 2 | 100/100 | 0.83 req/s | 1.67s / 23.92s / 23.92s |
+| 10 | 11/100 | 0.71 req/s | 14.10s / 15.69s / 15.69s (89 requests failed with HTTP 503) |
+
+At concurrency 1 the deployment is clean and predictable. At concurrency 2, throughput
+barely improves but one request spikes to ~24s — consistent with Cloud Run cold-starting
+a second instance mid-run (full container boot + model load) rather than CPU contention
+within a single instance. At concurrency 10 the single `--cpu=2` instance can't keep up
+and Cloud Run starts shedding load with 503s — this deployment's real concurrency
+ceiling is well below 10, not the ~80 req/instance Cloud Run defaults to. Not yet root
+caused against actual Cloud Run logs/metrics; revisit before relying on this deployment
+under real concurrent load.
+
+**Live RunPod GPU results** (100 requests, RTX PRO 4500, same test image each run — full
+rows in `results/benchmarks.csv`):
+
+| Concurrency | Success | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|
+| 1 | 100/100 | 0.85 req/s | 0.97s / 2.65s / 2.65s |
+| 2 | 100/100 | 2.04 req/s | 0.85s / 2.20s / 2.20s |
+| 10 | 100/100 | 7.45 req/s | 1.16s / 3.19s / 3.19s |
+
+Zero failures at any concurrency level — no cold-start cliff, no dropped requests,
+unlike Cloud Run. Throughput scales cleanly with concurrency (0.85 → 2.04 → 7.45 req/s),
+consistent with one dedicated GPU handling more in-flight requests without contention.
+One oddity: latency is **not** monotonic with concurrency — concurrency 1's median/p99
+(0.97s / 2.65s) is actually worse than concurrency 2's (0.85s / 2.20s). Single-request
+inference itself measured ~334ms (`inference_time_ms` from a direct `/predict` call), so
+most of the latency in every row above is request/network overhead through RunPod's proxy
+tunnel, not GPU compute — likely explains the non-monotonic latency (proxy-path jitter
+dominating over true concurrency effects at this scale), though not confirmed against
+server-side logs. At concurrency 10, GPU inference is roughly **10x Cloud Run's
+throughput** at the same concurrency (7.45 vs. 0.71 req/s). Not a fully apples-to-apples
+comparison (dedicated GPU pod vs. a `--cpu=2` autoscaled container), but it quantifies the
+gap between the two current serving options.
+
+*(Getting a clean run required patching the pod's environment on the fly: the RunPod
+image's baked-in `torch==2.4.1+cu124` predates this GPU's architecture and threw `CUDA
+error: no kernel image is available for execution on the device` on every request; a
+manual `pip install torch==2.12.0 torchvision==0.27.0` — matching `requirements.txt` —
+fixed it. `fastapi`/`uvicorn` were also missing entirely, since the serving app has
+never run on this image before. Both trace back to the same cause: `runpod/Dockerfile`
+hasn't been rebuilt since `requirements.txt` picked up these deps/versions. Worth a
+rebuild + repush so future pods don't need this manual patching — see
+`docs/runpod_setup.md`.)*
+
 ---
 
 ## Project Structure
