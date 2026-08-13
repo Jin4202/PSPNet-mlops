@@ -82,3 +82,26 @@ it private avoids exposing the project's setup unnecessarily.
 
 `setup.sh` prints the MLflow server and training commands (matching `README.md`'s
 Quickstart) once it finishes.
+
+## Running the serving API on a pod (for benchmarking)
+
+The pod normally only runs training — the FastAPI app has never been started there.
+`fastapi`/`uvicorn` are already in `requirements.txt` (installed by `runpod/Dockerfile`),
+so no image change is needed to also serve from the pod, e.g. to benchmark GPU inference
+against the Cloud Run deployment with `scripts/load_test.py`.
+
+1. On the pod (after `setup.sh` has run at least once, so `checkpoints/best.pth` exists
+   from training):
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+   Serves from `checkpoints/best.pth` by default (`CHECKPOINT_PATH` in
+   `app/model_loader.py`). Set `MLFLOW_TRACKING_URI=http://localhost:5000` first to serve
+   from the pod's own MLflow registry instead, if one is running.
+2. Expose port 8000 externally — same mechanism as MLflow (5000) and Jupyter (8888): Pod
+   → Edit Pod → add HTTP Port 8000. This may require a pod restart if the port list isn't
+   live-editable; the Network Volume, `secrets.env`, and DVC cache all persist across a
+   restart on the same volume.
+3. RunPod gives an HTTPS proxy URL for the exposed port (Connect panel), pattern
+   `https://<POD_ID>-8000.proxy.runpod.net`. Verify with `curl <url>/health` before
+   benchmarking.

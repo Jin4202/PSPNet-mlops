@@ -136,17 +136,33 @@ On every push to `main`, GitHub Actions builds the serving image, pushes it to A
 
 ---
 
+## Environment
+
+| Component | Spec |
+|---|---|
+| Training | RunPod, NVIDIA A40, CUDA 12.8.1 (`runpod/Dockerfile` base image), PyTorch 2.12.0 |
+| Serving (Cloud Run) | `--cpu=2 --memory=2Gi`, `us-central1`, Python 3.12-slim, PyTorch 2.12.0 (CPU-only) |
+| CI | GitHub Actions `ubuntu-latest`, Python 3.12 |
+
+Ad hoc benchmark runs (`scripts/load_test.py`) record their own client-side `cpu_count`/
+`platform` per row in `results/benchmarks.csv` rather than duplicating a single "dev
+machine" spec here, since that would go stale.
+
+---
+
 ## Benchmarking
 
 `scripts/load_test.py` fires a pack of concurrent requests at `/predict` and reports
-measured throughput (req/s) and latency percentiles. Works against a local server or a
-live Cloud Run URL:
+measured throughput (req/s) and latency percentiles. Works against a local server, a
+live Cloud Run URL, or an API started on a RunPod pod (see `docs/runpod_setup.md`).
+Every run is also appended as a row to `results/benchmarks.csv` (`--tag` labels which
+target it hit), so results stay comparable across targets and over time:
 
 ```bash
 python scripts/load_test.py \
   --url http://localhost:8000/predict \
   --image data/camvid/test/0001TP_008550.png \
-  --requests 100 --concurrency 10
+  --requests 100 --concurrency 10 --tag local
 ```
 
 **Concurrency**: `/predict` now runs inference via `run_in_threadpool` instead of blocking
