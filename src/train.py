@@ -1,20 +1,54 @@
+import argparse
 import os
 import sys
-import argparse
-import yaml
-import torch
-import torch.nn as nn
+
 import mlflow
 import mlflow.pytorch
+import torch
+import yaml
+from torch import nn
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.models.pspnet import build_model
 from src.data.dataset import build_loaders
 from src.evaluate import evaluate
+from src.models.pspnet import build_model
 
 
 def poly_lr(base, step, total, power=0.9):
     return base * ((1 - step / total) ** power)
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, cfg, current_step, total_steps):
+    """
+    Run one training epoch, applying poly LR decay per step.
+
+    Assumes `optimizer` was built with model.param_groups(base_lr) — 5 groups,
+    where the first 4 (backbone: layer0-4) get `lr` and the 5th (head) gets
+    `lr * 10`. Callers that build a differently-shaped optimizer must not
+    reuse this function as-is.
+
+    Returns: (avg_loss, current_step, last_lr)
+    """
+    tc = cfg["training"]
+    model.train()
+    epoch_loss = 0.0
+    lr = optimizer.param_groups[0]["lr"]
+
+    for imgs, lbls in loader:
+        imgs, lbls = imgs.to(device), lbls.to(device).long()
+        lr = poly_lr(tc["base_lr"], current_step, total_steps, tc["poly_power"])
+        for i, g in enumerate(optimizer.param_groups):
+            g["lr"] = lr if i < 4 else lr * 10
+        current_step += 1
+
+        main, aux = model(imgs)
+        loss = criterion(main, lbls) + tc["aux_weight"] * criterion(aux, lbls)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item()
+
+    return epoch_loss / len(loader), current_step, lr
 
 
 def train(cfg, run_name=None):
@@ -45,25 +79,10 @@ def train(cfg, run_name=None):
         best_miou, step, max_iter = 0.0, 0, tc["epochs"] * len(train_loader)
 
         for epoch in range(tc["epochs"]):
-            model.train()
-            epoch_loss = 0.0
-
-            for imgs, lbls in train_loader:
-                imgs, lbls = imgs.to(device), lbls.to(device).long()
-                lr = poly_lr(tc["base_lr"], step, max_iter, tc["poly_power"])
-                for i, g in enumerate(optimizer.param_groups):
-                    g["lr"] = lr if i < 4 else lr * 10
-                step += 1
-
-                main, aux = model(imgs)
-                loss = criterion(main, lbls) + tc["aux_weight"] * criterion(aux, lbls)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-
-            avg_loss = epoch_loss / len(train_loader)
-            val      = evaluate(model, val_loader, cfg, device)
+            avg_loss, step, lr = train_one_epoch(
+                model, train_loader, optimizer, criterion, device, cfg, step, max_iter
+            )
+            val = evaluate(model, val_loader, cfg, device)
 
             mlflow.log_metrics({
                 "train_loss": avg_loss,

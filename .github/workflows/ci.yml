@@ -69,6 +69,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/pspnet-serving:${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +90,17 @@ jobs:
           dvc pull checkpoints/best.pth.dvc
 
       - name: Build serving image
-        run: docker build -t pspnet-serving:${{ github.sha }} .
+        run: docker build -t "${IMAGE}" .
+
+      # Push only on an actual push to main — PRs just validate the build.
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        name: Push image to Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+          docker push "${IMAGE}"
 
   deploy:
     runs-on: ubuntu-latest
@@ -100,33 +112,11 @@ jobs:
     env:
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/pspnet-serving:${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-
-      - id: auth
-        uses: google-github-actions/auth@v2
+      - uses: google-github-actions/auth@v2
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Pull model checkpoint from DVC
-        run: |
-          pip install --no-cache-dir "dvc[gs]"
-          dvc pull checkpoints/best.pth.dvc
-
-      - name: Build and push image
-        run: |
-          docker build -t "${IMAGE}" .
-          docker push "${IMAGE}"
 
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2

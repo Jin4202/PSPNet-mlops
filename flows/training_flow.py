@@ -32,16 +32,16 @@ import mlflow.pytorch
 import torch
 import yaml
 from prefect import flow, get_run_logger, task
+from torch import nn
 
 # Add project root to sys.path so src/ is importable from flows/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.data.dataset import get_train_loader, get_val_loader
+from src.data.dataset import build_loaders
 from src.evaluate import evaluate
-from src.models.pspnet import PSPNet
+from src.models.pspnet import build_model
 from src.train import train_one_epoch
-
 
 # ─────────────────────────────────────────────
 # Config loader (used outside of tasks)
@@ -66,8 +66,7 @@ def load_data_task(cfg: dict) -> tuple:
     logger = get_run_logger()
     logger.info("Loading CamVid dataloaders ...")
 
-    train_loader = get_train_loader(cfg)
-    val_loader   = get_val_loader(cfg)
+    train_loader, val_loader = build_loaders(cfg)
 
     logger.info(
         f"  Train batches: {len(train_loader)} | "
@@ -83,13 +82,14 @@ def load_data_task(cfg: dict) -> tuple:
 @task(name="prepare-model")
 def prepare_model_task(cfg: dict) -> tuple:
     """
-    Instantiate PSPNet, SGD optimizer, and select the compute device.
+    Instantiate PSPNet, SGD optimizer, criterion, and select the compute device.
 
-    Parameter groups:
-      - backbone (layer0–layer4): base_lr
-      - head (PPM + classifiers):  10 × base_lr
-    This differential LR strategy lets the pre-trained backbone fine-tune
-    slowly while the newly initialized head learns aggressively.
+    Optimizer is built via model.param_groups(base_lr) — 5 groups
+    (layer0+1, layer2, layer3, layer4 at base_lr; PPM+classifiers at
+    10 x base_lr) — the same convention src.train.train_one_epoch assumes
+    when applying poly LR decay. This differential LR strategy lets the
+    pre-trained backbone fine-tune slowly while the newly initialized head
+    learns aggressively.
 
     Note: large PyTorch objects are passed directly in memory between tasks
     because we use a Process work pool (single process). This avoids
@@ -99,39 +99,19 @@ def prepare_model_task(cfg: dict) -> tuple:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    model_cfg = cfg["model"]
     train_cfg = cfg["training"]
 
-    model = PSPNet(
-        num_classes=model_cfg["num_classes"],
-        zoom_factor=model_cfg["zoom_factor"],
-    ).to(device)
-
-    # Split parameters: backbone vs. head
-    backbone_params = [
-        p for name, p in model.named_parameters()
-        if "cls" not in name and "ppm" not in name
-    ]
-    head_params = [
-        p for name, p in model.named_parameters()
-        if "cls" in name or "ppm" in name
-    ]
+    model = build_model(cfg).to(device)
 
     optimizer = torch.optim.SGD(
-        [
-            {"params": backbone_params, "lr": train_cfg["base_lr"]},
-            {"params": head_params,     "lr": train_cfg["base_lr"] * 10},
-        ],
+        model.param_groups(train_cfg["base_lr"]),
         momentum=train_cfg["momentum"],
         weight_decay=train_cfg["weight_decay"],
     )
+    criterion = nn.CrossEntropyLoss(ignore_index=cfg["data"]["ignore_label"])
 
-    logger.info(
-        f"Model ready | "
-        f"Backbone param groups: {len(backbone_params)} | "
-        f"Head param groups: {len(head_params)}"
-    )
-    return model, optimizer, device
+    logger.info(f"Model ready | param groups: {len(optimizer.param_groups)}")
+    return model, optimizer, criterion, device
 
 
 # ─────────────────────────────────────────────
@@ -143,6 +123,7 @@ def train_model_task(
     cfg: dict,
     model,
     optimizer,
+    criterion,
     device: str,
     train_loader,
     val_loader,
@@ -151,8 +132,8 @@ def train_model_task(
     Run the full training loop and log everything to MLflow.
 
     Per epoch:
-      - train_one_epoch  → computes train loss + mIoU, applies poly LR decay
-      - evaluate         → computes val loss + mIoU on the validation set
+      - train_one_epoch  → computes train loss, applies poly LR decay
+      - evaluate         → computes val mIoU/allacc on the validation set
       - MLflow metrics   → logged at each epoch step
       - checkpoint       → saved only when val mIoU improves (best model)
 
@@ -167,8 +148,12 @@ def train_model_task(
     mlflow.set_tracking_uri(mlflow_cfg["tracking_uri"])
     mlflow.set_experiment(mlflow_cfg["experiment_name"])
 
+    save_dir = Path(train_cfg["save_dir"])
+    if not save_dir.is_absolute():
+        save_dir = PROJECT_ROOT / save_dir
+
     best_val_miou  = 0.0
-    best_ckpt_path = PROJECT_ROOT / "checkpoints" / "best_model.pth"
+    best_ckpt_path = save_dir / "best.pth"
     best_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
 
     with mlflow.start_run() as run:
@@ -177,14 +162,14 @@ def train_model_task(
 
         # Log all hyperparameters up front
         mlflow.log_params({
-            "epochs":          train_cfg["epochs"],
-            "batch_size":      train_cfg["batch_size"],
-            "base_lr":         train_cfg["base_lr"],
-            "momentum":        train_cfg["momentum"],
-            "weight_decay":    train_cfg["weight_decay"],
-            "aux_loss_weight": cfg["model"]["aux_loss_weight"],
-            "crop_size":       cfg["data"]["crop_size"],
-            "architecture":    cfg["model"]["architecture"],
+            "epochs":       train_cfg["epochs"],
+            "batch_size":   train_cfg["batch_size"],
+            "base_lr":      train_cfg["base_lr"],
+            "momentum":     train_cfg["momentum"],
+            "weight_decay": train_cfg["weight_decay"],
+            "aux_weight":   train_cfg["aux_weight"],
+            "crop_size":    cfg["augmentation"]["crop_size"],
+            "arch":         cfg["model"]["arch"],
         })
 
         total_steps   = train_cfg["epochs"] * len(train_loader)
@@ -194,10 +179,11 @@ def train_model_task(
             epoch_start = time.time()
 
             # --- Train one epoch ---
-            train_loss, train_miou, current_step = train_one_epoch(
+            train_loss, current_step, lr = train_one_epoch(
                 model=model,
                 loader=train_loader,
                 optimizer=optimizer,
+                criterion=criterion,
                 device=device,
                 cfg=cfg,
                 current_step=current_step,
@@ -205,12 +191,8 @@ def train_model_task(
             )
 
             # --- Validate ---
-            val_miou, val_loss = evaluate(
-                model=model,
-                loader=val_loader,
-                device=device,
-                cfg=cfg,
-            )
+            val_result = evaluate(model=model, loader=val_loader, cfg=cfg, device=device)
+            val_miou   = val_result["miou"]
 
             epoch_time = time.time() - epoch_start
 
@@ -218,9 +200,9 @@ def train_model_task(
             mlflow.log_metrics(
                 {
                     "train_loss": train_loss,
-                    "train_miou": train_miou,
-                    "val_loss":   val_loss,
                     "val_miou":   val_miou,
+                    "val_allacc": val_result["allacc"],
+                    "lr":         lr,
                     "epoch_time": epoch_time,
                 },
                 step=epoch,
@@ -228,8 +210,8 @@ def train_model_task(
 
             logger.info(
                 f"Epoch [{epoch:3d}/{train_cfg['epochs']}] "
-                f"train_loss={train_loss:.4f}  train_mIoU={train_miou:.4f}  "
-                f"val_loss={val_loss:.4f}  val_mIoU={val_miou:.4f}  "
+                f"train_loss={train_loss:.4f}  "
+                f"val_mIoU={val_miou:.4f}  val_allacc={val_result['allacc']:.4f}  "
                 f"({epoch_time:.1f}s)"
             )
 
@@ -239,18 +221,22 @@ def train_model_task(
                 torch.save(
                     {
                         "epoch":       epoch,
-                        "model_state": model.state_dict(),
+                        "state_dict":  model.state_dict(),
                         "optimizer":   optimizer.state_dict(),
-                        "val_miou":    val_miou,
+                        "miou":        val_miou,
                         "config":      cfg,
                     },
                     best_ckpt_path,
                 )
                 logger.info(f"  ✓ New best val_mIoU={val_miou:.4f} — checkpoint saved")
 
-        # Log final best mIoU and upload checkpoint as MLflow artifact
+        # Log final best mIoU, then reload the best checkpoint and log it as
+        # an MLflow model (not just a raw file) so register_model_task can
+        # register it via runs:/{run_id}/{mlflow_cfg['artifact_path']}
         mlflow.log_metric("best_val_miou", best_val_miou)
-        mlflow.log_artifact(str(best_ckpt_path), artifact_path="checkpoints")
+        best_ckpt = torch.load(best_ckpt_path, map_location=device)
+        model.load_state_dict(best_ckpt["state_dict"])
+        mlflow.pytorch.log_model(model, mlflow_cfg["artifact_path"])
 
         logger.info(f"Training complete. Best Val mIoU: {best_val_miou:.4f}")
 
@@ -369,9 +355,11 @@ def training_flow(config_path: str = "configs/config.yaml"):
     cfg = load_config(config_path)
 
     # Tasks execute sequentially; each receives the output of the previous one
-    train_loader, val_loader  = load_data_task(cfg)
-    model, optimizer, device  = prepare_model_task(cfg)
-    best_val_miou, run_id     = train_model_task(cfg, model, optimizer, device, train_loader, val_loader)
+    train_loader, val_loader          = load_data_task(cfg)
+    model, optimizer, criterion, device = prepare_model_task(cfg)
+    best_val_miou, run_id             = train_model_task(
+        cfg, model, optimizer, criterion, device, train_loader, val_loader
+    )
     eval_result               = evaluate_model_task(best_val_miou, cfg)
     model_version_uri         = register_model_task(eval_result, run_id, cfg)
 

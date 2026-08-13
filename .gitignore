@@ -38,7 +38,9 @@ Thumbs.db
 
 # IDE
 .vscode/
-.idea/mlflow.db
-mlartifacts/
+.idea/
+
+# MLflow local tracking db
+mlflow.db
+
 .ipynb_checkpoints/
-PROGRESS.md

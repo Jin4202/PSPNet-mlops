@@ -148,7 +148,7 @@ python src/train.py --config configs/config.yaml
 
 ## Deployment
 
-On every push to `main`, GitHub Actions builds the serving image, pushes it to Artifact Registry, and deploys it to Cloud Run (`pspnet-serving`, `us-central1`). Authentication uses Workload Identity Federation — GitHub's OIDC token is exchanged for short-lived GCP credentials, so no service-account key is stored in the repo. See `dev/dev_note.md` for the full setup (IAM roles, WIF pool/provider, repo variables).
+On every push to `main`, GitHub Actions builds the serving image, pushes it to Artifact Registry, and deploys it to Cloud Run (`pspnet-serving`, `us-central1`). Authentication uses Workload Identity Federation — GitHub's OIDC token is exchanged for short-lived GCP credentials, so no service-account key is stored in the repo. See `docs/dev_note.md` for the full setup (IAM roles, WIF pool/provider, repo variables).
 
 ---
 

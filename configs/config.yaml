@@ -43,6 +43,7 @@ mlflow:
   experiment_name: "pspnet-camvid"
   run_name: "baseline-v1"
   model_name: "pspnet-camvid"
+  artifact_path: "model"
 
 validation_gate:
   min_miou: 0.55
