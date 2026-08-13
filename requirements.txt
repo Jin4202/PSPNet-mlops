@@ -99,6 +99,7 @@ pillow==12.2.0
 platformdirs==4.9.6
 prefect==3.7.2
 prettytable==3.17.0
+prometheus-fastapi-instrumentator==7.1.0
 prompt_toolkit==3.0.52
 propcache==0.5.2
 protobuf==6.33.6

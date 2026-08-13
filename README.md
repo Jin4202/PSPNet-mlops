@@ -44,7 +44,7 @@ Training → Serving → Monitoring → Automated Retraining.
 - [x] Multi-stage Docker build (minimized image size)
 - [x] Inference time included in API response
 - [x] Unit tests (preprocessing, API endpoint)
-- [ ] Fix `/predict` serializing concurrent requests — offload inference off the event loop (`run_in_threadpool` or multiple uvicorn workers); see "Benchmarking" section
+- [x] Fix `/predict` blocking the event loop — inference now runs via `run_in_threadpool`; see "Benchmarking" section for the remaining CPU-contention caveat
 
 ### CI/CD & Deployment
 - [x] GitHub repo setup + project structure
@@ -55,7 +55,7 @@ Training → Serving → Monitoring → Automated Retraining.
 - [ ] Cloud deployment stability verified
 
 ### Monitoring
-- [ ] Prometheus metrics exposed (request volume, latency, error rate)
+- [x] Prometheus metrics exposed (`GET /metrics` — request volume/latency/error rate via `prometheus-fastapi-instrumentator`, plus a custom `pspnet_inference_duration_seconds` histogram isolating model inference time)
 - [ ] Grafana dashboard configured
 
 ### Drift Detection & Auto-Retraining
@@ -147,12 +147,20 @@ python scripts/load_test.py \
   --requests 100 --concurrency 10
 ```
 
-**Known limitation**: `/predict` is `async def` but runs PyTorch inference synchronously
-inline rather than offloading it to a thread pool. On a single uvicorn worker this
-serializes requests — throughput stays flat as concurrency increases while per-request
-latency grows instead (measured: ~5 req/s at both concurrency 1 and 12, with p99 latency
-going from 0.2s to 2.4s). Fixing this (e.g. `run_in_threadpool`, or multiple uvicorn
-workers) is unstarted — tracked under "Serving" in the Progress checklist above.
+**Concurrency**: `/predict` now runs inference via `run_in_threadpool` instead of blocking
+the event loop inline, so the server can keep handling other requests (e.g. `/health`)
+while inference is in flight. That said, on this machine (11 CPU cores) it barely moved
+raw `/predict` throughput under load — measured ~5 req/s at both concurrency 1 and 12
+before *and* after the fix, with p99 latency still going from ~0.2s to ~2.4s. Root cause:
+PyTorch defaults to 5 intra-op threads per inference call, so concurrent requests mostly
+contend for the same cores rather than truly parallelizing — moving work off the event
+loop doesn't help if the CPU itself is the bottleneck. Constraining PyTorch to fewer
+threads per request (e.g. `OMP_NUM_THREADS=1`) measured a real ~14% throughput gain at
+concurrency 12, but at the cost of ~29% worse single-request latency — a genuine
+latency-vs-throughput tradeoff, deliberately not applied here since the right setting
+depends on the deployment's actual CPU allocation (Cloud Run currently runs `--cpu=2`,
+very different oversubscription math than this 11-core dev machine) and wasn't tuned for
+it. Revisit if concurrent throughput becomes a real bottleneck in practice.
 
 ---
 

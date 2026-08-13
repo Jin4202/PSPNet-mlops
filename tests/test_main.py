@@ -61,3 +61,29 @@ def test_health_when_no_request_yet_uses_lifespan_state(client):
     # lifespan has already populated state by the time the client is usable
     response = client.get("/health")
     assert response.json()["device"] == "cpu"
+
+
+def test_metrics_exposes_prometheus_format(client):
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "pspnet_inference_duration_seconds" in response.text
+
+
+def _inference_count(client):
+    for line in client.get("/metrics").text.splitlines():
+        if line.startswith("pspnet_inference_duration_seconds_count"):
+            return float(line.split()[-1])
+    return 0.0
+
+
+def test_metrics_records_inference_duration(client, sample_image):
+    before = _inference_count(client)
+
+    buf = io.BytesIO()
+    sample_image.save(buf, format="PNG")
+    buf.seek(0)
+    client.post("/predict", files={"file": ("test.png", buf, "image/png")})
+
+    assert _inference_count(client) == before + 1

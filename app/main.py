@@ -4,13 +4,23 @@ from contextlib import asynccontextmanager
 
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from PIL import Image, UnidentifiedImageError
+from prometheus_client import Histogram
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 
 from app.inference import mask_to_png_base64, predict_mask
 from app.model_loader import load_config, load_model
 
 state: dict = {}
+
+# Separate from the instrumentator's generic HTTP-duration metric, which conflates
+# request parsing/response encoding with actual model inference time.
+INFERENCE_DURATION = Histogram(
+    "pspnet_inference_duration_seconds",
+    "Time spent running PSPNet inference only (excludes request parsing/response encoding)",
+)
 
 
 @asynccontextmanager
@@ -29,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PSPNet CamVid Segmentation API", lifespan=lifespan)
+Instrumentator().instrument(app).expose(app)
 
 
 class PredictResponse(BaseModel):
@@ -55,8 +66,9 @@ async def predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Could not decode uploaded file as an image.")
 
     start = time.perf_counter()
-    mask = predict_mask(state["model"], image, state["cfg"], state["device"])
+    mask = await run_in_threadpool(predict_mask, state["model"], image, state["cfg"], state["device"])
     inference_time_ms = (time.perf_counter() - start) * 1000
+    INFERENCE_DURATION.observe(inference_time_ms / 1000)
 
     return PredictResponse(
         inference_time_ms=round(inference_time_ms, 2),
