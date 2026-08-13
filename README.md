@@ -1,75 +1,69 @@
 # PSPNet MLOps Pipeline
 
-End-to-end MLOps system for semantic segmentation (PSPNet/CamVid).  
+End-to-end MLOps system for semantic segmentation (PSPNet on CamVid).
 Training → Serving → Monitoring → Automated Retraining.
 
 ---
 
-## Progress
+## Overview
 
-### Model
-- [x] `configs/config.yaml` — centralized hyperparameter management
-- [x] `src/models/resnet.py` — ResNet-50 (Deep Base + Dilated Conv)
-- [x] `src/models/pspnet.py` — PSPNet + PPM
-- [x] `src/data/dataset.py` — CamVid dataloader + augmentation pipeline
-- [x] `src/evaluate.py` — mIoU evaluation
-- [x] `src/train.py` — training loop
-- [x] Baseline training complete (100 epochs, RunPod A40)
-- [x] **Best Val mIoU: 0.5597**
+This repo trains a PSPNet segmentation model on the CamVid driving-scene dataset and
+runs the whole thing as a pipeline. Data is versioned with DVC, runs are tracked in
+MLflow, training executes as a Prefect flow behind a validation gate, and the registered
+model ships to Cloud Run through GitHub Actions. I built it to practice the operational
+side of ML, so the interesting part is the plumbing around the model rather than the
+model itself.
 
-### Data Version Control
-- [x] DVC init + GCS remote connected (`gs://pspnet-mlops-dvc`)
-- [x] CamVid dataset `dvc push` (1,406 files) + `dvc pull` reproducibility verified
+---
 
-### Experiment Tracking
-- [x] MLflow instrumentation in `src/train.py` (hyperparameters, mIoU, loss curves)
-- [x] MLflow Model Registry registered (`pspnet-camvid v1`)
+## Architecture
 
-### Pipeline Orchestration
-- [x] Prefect install + local server running
-- [x] `flows/training_flow.py` — Prefect Flow with 5 tasks
-  - [x] `load_data_task`
-  - [x] `prepare_model_task`
-  - [x] `train_model_task`
-  - [x] `evaluate_model_task`
-  - [x] `register_model_task`
-- [x] Validation Gate — block Model Registry registration when mIoU is below threshold
-- [x] `configs/config.yaml` refactor (add `validation_gate` section)
-- [x] Prefect Deployment created (`prefect deploy`)
-- [x] Single-command execution verified: `prefect deployment run training-flow/pspnet-training`
-- [x] Flow run history visible in Prefect UI
+```
+CamVid Dataset (DVC + GCS)
+        ↓
+Prefect Flow (load → prepare → train → evaluate → register)
+   tracked throughout in MLflow (params, metrics, loss curves)
+        ↓
+Validation Gate (blocks registry on low mIoU)
+        ↓
+MLflow Model Registry
+        ↓
+GitHub Actions CI/CD (lint → test → build → deploy)
+        ↓
+FastAPI Serving (Docker) on GCP Cloud Run
+        ↓
+Prometheus Metrics  →  Grafana dashboard (planned)
+        ↓
+Evidently Drift Detection  →  Auto-Retrain Trigger (planned)
+```
 
-### Serving
-- [x] FastAPI inference endpoint (`/predict`: image upload → segmentation mask)
-- [x] Multi-stage Docker build (minimized image size)
-- [x] Inference time included in API response
-- [x] Unit tests (preprocessing, API endpoint)
-- [x] Fix `/predict` blocking the event loop — inference now runs via `run_in_threadpool`; see "Benchmarking" section for the remaining CPU-contention caveat
+Each stage runs on its own. `flows/training_flow.py` drives training end to end, `app/`
+serves the registered model, and CI/CD connects the two. A push to `main` is what moves
+a validated model from the registry to a live endpoint.
 
-### CI/CD & Deployment
-- [x] GitHub repo setup + project structure
-- [x] GitHub Actions workflow — push → lint/test → Docker build → Artifact Registry push → Cloud Run deploy
-- [x] Model validation gate in CI/CD pipeline
-- [x] Cloud Run deploy job wired up via Workload Identity Federation (no static keys)
-- [x] GCP Cloud Run deployment verified live
-- [ ] Cloud deployment stability verified
+---
 
-### Monitoring
-- [x] Prometheus metrics exposed (`GET /metrics` — request volume/latency/error rate via `prometheus-fastapi-instrumentator`, plus a custom `pspnet_inference_duration_seconds` histogram isolating model inference time)
-- [ ] Grafana dashboard configured
+## Results
 
-### Drift Detection & Auto-Retraining
-- [ ] Evidently AI — input distribution drift monitoring + threshold definition
-- [ ] Prefect Flow auto-triggered when drift threshold is exceeded
-- [ ] Champion-Challenger — retrained model promoted to production only when it outperforms incumbent
-- [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
-- [ ] End-to-end integration test (drift → retraining → evaluation → deployment, fully automated)
+| Metric | Value |
+|---|---|
+| Val mIoU | 0.5597 |
+| Model | PSPNet (ResNet-50 + PPM), 100 epochs |
+| Model Registry | `pspnet-camvid v1` |
+| Training GPU | NVIDIA A40 (RunPod) |
 
-### Portfolio / Documentation
-- [ ] Architecture diagram created + added to top of README
-- [ ] README finalized (problem → architecture → components → result metrics)
-- [ ] Demo video recorded (3–5 min: normal inference → drift event → automated retraining)
-- [ ] Resume bullet written + technical decision retrospective documented
+Serving throughput (100 requests, concurrency 10). The full concurrency sweep is in
+[Benchmarking](#benchmarking).
+
+| Target | Success | Throughput | p99 Latency |
+|---|---|---|---|
+| Cloud Run (`--cpu=2`) | 11/100 | 0.71 req/s | 15.69s |
+| RunPod GPU (RTX PRO 4500) | 100/100 | 7.45 req/s | 3.19s |
+
+The RunPod GPU pod holds concurrency 10 with zero failures. The current Cloud Run
+config does not. It starts shedding requests with HTTP 503 well before concurrency 10.
+[Benchmarking](#benchmarking) has the full breakdown and a likely cold-start explanation
+for the Cloud Run cliff.
 
 ---
 
@@ -91,25 +85,26 @@ Training → Serving → Monitoring → Automated Retraining.
 
 ## Quickstart (RunPod)
 
-Pods launch from a custom image (`runpod/Dockerfile`) with the training environment
-pre-installed; a `setup.sh` baked into that image handles GCP/GitHub auth and pulls the
-repo + DVC data — no browser-based auth flow needed on the pod. Full one-time setup
-(building the image, creating the scoped GCP service account) is in
+Pods launch from a custom image (`runpod/Dockerfile`) that already has the training
+environment installed. A `setup.sh` baked into the image handles GCP and GitHub auth and
+pulls the repo plus the DVC data, so there is no browser auth flow to run on the pod.
+One-time setup (building the image, creating the scoped GCP service account) is in
 [`docs/runpod_setup.md`](docs/runpod_setup.md).
 
-**First pod on a given Network Volume** (one-time — `secrets.env` and the DVC cache
-persist on the volume across future pods, so this isn't a repeat-every-time step):
-1. Launch a pod from the built image, with a Network Volume mounted at `/workspace` and
-   **Container Disk set to at least 40-50GB** (too small and the image can silently only
-   partially extract — see `docs/runpod_setup.md`).
+**First pod on a given Network Volume.** This part runs once. `secrets.env` and the DVC
+cache live on the volume and survive across pods.
+
+1. Launch a pod from the built image with a Network Volume mounted at `/workspace` and
+   **Container Disk set to at least 40-50GB**. Too small and the image can silently
+   extract only part of itself (see `docs/runpod_setup.md`).
 2. SSH in (Pod → Connect → SSH over exposed TCP).
 3. Copy `runpod/secrets.env.example` to `secrets.env` locally, fill in your GCP
    service-account key (see `docs/runpod_setup.md`), and upload it to
-   `/workspace/secrets.env` (paste into `nano secrets.env`, or `scp`).
+   `/workspace/secrets.env`. Pasting into `nano secrets.env` works, so does `scp`.
 4. Run `setup.sh`.
 
-**Every later pod on the same volume:** SSH in, run `setup.sh` again — it's idempotent
-and picks up the credentials/data already on the volume.
+**Every later pod on the same volume.** SSH in and run `setup.sh` again. It is
+idempotent and picks up the credentials and data already on the volume.
 
 ### MLflow Server (Terminal A)
 ```bash
@@ -121,7 +116,7 @@ mlflow server \
   --allowed-hosts "*"
 ```
 
-> MLflow UI on RunPod: Pod → Connect → HTTP 5000
+> The MLflow UI on RunPod is under Pod → Connect → HTTP 5000.
 
 ### Train (Terminal B)
 ```bash
@@ -132,135 +127,19 @@ python src/train.py --config configs/config.yaml
 
 ## Deployment
 
-On every push to `main`, GitHub Actions builds the serving image, pushes it to Artifact Registry, and deploys it to Cloud Run (`pspnet-serving`, `us-central1`). Authentication uses Workload Identity Federation — GitHub's OIDC token is exchanged for short-lived GCP credentials, so no service-account key is stored in the repo. See `docs/dev_note.md` for the full setup (IAM roles, WIF pool/provider, repo variables).
-
----
-
-## Environment
-
-| Component | Spec |
-|---|---|
-| Training | RunPod, NVIDIA A40, CUDA 12.8.1 (`runpod/Dockerfile` base image), PyTorch 2.12.0 |
-| Serving (Cloud Run) | `--cpu=2 --memory=2Gi`, `us-central1`, Python 3.12-slim, PyTorch 2.12.0 (CPU-only) |
-| CI | GitHub Actions `ubuntu-latest`, Python 3.12 |
-
-Ad hoc benchmark runs (`scripts/load_test.py`) record their own client-side `cpu_count`/
-`platform` per row in `results/benchmarks.csv` rather than duplicating a single "dev
-machine" spec here, since that would go stale.
-
----
-
-## Benchmarking
-
-`scripts/load_test.py` fires a pack of concurrent requests at `/predict` and reports
-measured throughput (req/s) and latency percentiles. Works against a local server, a
-live Cloud Run URL, or an API started on a RunPod pod (see `docs/runpod_setup.md`).
-Every run is also appended as a row to `results/benchmarks.csv` (`--tag` labels which
-target it hit), so results stay comparable across targets and over time:
-
-```bash
-python scripts/load_test.py \
-  --url http://localhost:8000/predict \
-  --image data/camvid/test/0001TP_008550.png \
-  --requests 100 --concurrency 10 --tag local
-```
-
-**Concurrency**: `/predict` now runs inference via `run_in_threadpool` instead of blocking
-the event loop inline, so the server can keep handling other requests (e.g. `/health`)
-while inference is in flight. That said, on this machine (11 CPU cores) it barely moved
-raw `/predict` throughput under load — measured ~5 req/s at both concurrency 1 and 12
-before *and* after the fix, with p99 latency still going from ~0.2s to ~2.4s. Root cause:
-PyTorch defaults to 5 intra-op threads per inference call, so concurrent requests mostly
-contend for the same cores rather than truly parallelizing — moving work off the event
-loop doesn't help if the CPU itself is the bottleneck. Constraining PyTorch to fewer
-threads per request (e.g. `OMP_NUM_THREADS=1`) measured a real ~14% throughput gain at
-concurrency 12, but at the cost of ~29% worse single-request latency — a genuine
-latency-vs-throughput tradeoff, deliberately not applied here since the right setting
-depends on the deployment's actual CPU allocation (Cloud Run currently runs `--cpu=2`,
-very different oversubscription math than this 11-core dev machine) and wasn't tuned for
-it. Revisit if concurrent throughput becomes a real bottleneck in practice.
-
-**Live Cloud Run results** (100 requests, `--cpu=2 --memory=2Gi`, same test image each
-run — full rows in `results/benchmarks.csv`):
-
-| Concurrency | Success | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|
-| 1 | 100/100 | 0.62 req/s | 1.59s / 1.92s / 1.92s |
-| 2 | 100/100 | 0.83 req/s | 1.67s / 23.92s / 23.92s |
-| 10 | 11/100 | 0.71 req/s | 14.10s / 15.69s / 15.69s (89 requests failed with HTTP 503) |
-
-At concurrency 1 the deployment is clean and predictable. At concurrency 2, throughput
-barely improves but one request spikes to ~24s — consistent with Cloud Run cold-starting
-a second instance mid-run (full container boot + model load) rather than CPU contention
-within a single instance. At concurrency 10 the single `--cpu=2` instance can't keep up
-and Cloud Run starts shedding load with 503s — this deployment's real concurrency
-ceiling is well below 10, not the ~80 req/instance Cloud Run defaults to. Not yet root
-caused against actual Cloud Run logs/metrics; revisit before relying on this deployment
-under real concurrent load.
-
-**Live RunPod GPU results** (100 requests, RTX PRO 4500, same test image each run — full
-rows in `results/benchmarks.csv`):
-
-| Concurrency | Success | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|
-| 1 | 100/100 | 0.85 req/s | 0.97s / 2.65s / 2.65s |
-| 2 | 100/100 | 2.04 req/s | 0.85s / 2.20s / 2.20s |
-| 10 | 100/100 | 7.45 req/s | 1.16s / 3.19s / 3.19s |
-
-Zero failures at any concurrency level — no cold-start cliff, no dropped requests,
-unlike Cloud Run. Throughput scales cleanly with concurrency (0.85 → 2.04 → 7.45 req/s),
-consistent with one dedicated GPU handling more in-flight requests without contention.
-One oddity: latency is **not** monotonic with concurrency — concurrency 1's median/p99
-(0.97s / 2.65s) is actually worse than concurrency 2's (0.85s / 2.20s). Single-request
-inference itself measured ~334ms (`inference_time_ms` from a direct `/predict` call), so
-most of the latency in every row above is request/network overhead through RunPod's proxy
-tunnel, not GPU compute — likely explains the non-monotonic latency (proxy-path jitter
-dominating over true concurrency effects at this scale), though not confirmed against
-server-side logs. At concurrency 10, GPU inference is roughly **10x Cloud Run's
-throughput** at the same concurrency (7.45 vs. 0.71 req/s). Not a fully apples-to-apples
-comparison (dedicated GPU pod vs. a `--cpu=2` autoscaled container), but it quantifies the
-gap between the two current serving options.
-
-*(Getting a clean run required patching the pod's environment on the fly: the RunPod
-image's baked-in `torch==2.4.1+cu124` predates this GPU's architecture and threw `CUDA
-error: no kernel image is available for execution on the device` on every request; a
-manual `pip install torch==2.12.0 torchvision==0.27.0` — matching `requirements.txt` —
-fixed it. `fastapi`/`uvicorn` were also missing entirely, since the serving app has
-never run on this image before. Both trace back to the same cause: `runpod/Dockerfile`
-hasn't been rebuilt since `requirements.txt` picked up these deps/versions. Worth a
-rebuild + repush so future pods don't need this manual patching — see
-`docs/runpod_setup.md`.)*
-
----
-
-## Project Structure
-
-```
-PSPNet_mlops/
-├── configs/
-│   └── config.yaml        # All hyperparameters
-├── data/
-│   ├── camvid/            # CamVid dataset (DVC managed)
-│   └── camvid.dvc         # DVC pointer
-├── flows/
-│   └── training_flow.py   # Prefect training pipeline
-├── src/
-│   ├── models/
-│   │   ├── resnet.py      # ResNet-50 backbone (deep base + dilated)
-│   │   └── pspnet.py      # PSPNet + PPM
-│   ├── data/
-│   │   └── dataset.py     # CamVid dataloader
-│   ├── train.py           # Training loop + MLflow tracking
-│   └── evaluate.py        # mIoU evaluation
-└── checkpoints/           # Saved model weights
-```
+Every push to `main` makes GitHub Actions build the serving image, push it to Artifact
+Registry, and deploy it to Cloud Run (`pspnet-serving`, `us-central1`). Auth goes
+through Workload Identity Federation, so GitHub's OIDC token is exchanged for
+short-lived GCP credentials and no service-account key sits in the repo. Full setup
+(IAM roles, WIF pool and provider, repo variables) is in `docs/dev_note.md`.
 
 ---
 
 ## Dataset
 
-**CamVid-11** — Urban driving scene semantic segmentation  
-11 classes: Sky, Building, Pole, Road, Pavement, Tree, SignSymbol, Fence, Car, Pedestrian, Bicyclist
+**CamVid-11**, urban driving scene semantic segmentation.
+11 classes. Sky, Building, Pole, Road, Pavement, Tree, SignSymbol, Fence, Car,
+Pedestrian, Bicyclist.
 
 | Split | Images |
 |---|---|
@@ -293,10 +172,137 @@ Input (3, 201, 201)
 
 ---
 
-## Results
+## Environment
 
-| Metric | Value |
+| Component | Spec |
 |---|---|
-| Val mIoU | 0.5597 |
-| Model Registry | pspnet-camvid v1 |
-| GPU | NVIDIA A40 (RunPod) |
+| Training | RunPod, NVIDIA A40, CUDA 12.8.1 (`runpod/Dockerfile` base image), PyTorch 2.12.0 |
+| Serving (Cloud Run) | `--cpu=2 --memory=2Gi`, `us-central1`, Python 3.12-slim, PyTorch 2.12.0 (CPU-only) |
+| CI | GitHub Actions `ubuntu-latest`, Python 3.12 |
+
+Ad hoc benchmark runs (`scripts/load_test.py`) record their own client-side `cpu_count`
+and `platform` per row in `results/benchmarks.csv`. A single "dev machine" spec listed
+here would just go stale.
+
+---
+
+## Benchmarking
+
+`scripts/load_test.py` fires a batch of concurrent requests at `/predict` and reports
+measured throughput (req/s) and latency percentiles. It works against a local server, a
+live Cloud Run URL, or an API started on a RunPod pod (see `docs/runpod_setup.md`).
+Every run is appended as a row to `results/benchmarks.csv`, and `--tag` labels which
+target it hit, so results stay comparable across targets and over time.
+
+```bash
+python scripts/load_test.py \
+  --url http://localhost:8000/predict \
+  --image data/camvid/test/0001TP_008550.png \
+  --requests 100 --concurrency 10 --tag local
+```
+
+**Concurrency.** `/predict` runs inference through `run_in_threadpool` instead of
+blocking the event loop inline, so the server can keep answering other requests like
+`/health` while inference is in flight. On my dev machine (11 CPU cores) that barely
+moved raw `/predict` throughput under load. I measured about 5 req/s at both concurrency
+1 and 12, before and after the change, with p99 latency still going from ~0.2s to ~2.4s.
+The cause is PyTorch defaulting to 5 intra-op threads per inference call, so concurrent
+requests mostly contend for the same cores instead of running in parallel. Getting work
+off the event loop does not help when the CPU is the bottleneck. Capping threads per
+request with `OMP_NUM_THREADS=1` measured about 14% more throughput at concurrency 12
+and about 29% worse single-request latency, a straight latency-versus-throughput
+tradeoff. I left it off, since the right setting depends on how much CPU the deployment
+actually has, and Cloud Run at `--cpu=2` has very different oversubscription math than
+an 11-core dev machine. Worth revisiting if concurrent throughput becomes a real
+bottleneck.
+
+**Live Cloud Run results.** 100 requests, `--cpu=2 --memory=2Gi`, same test image each
+run. Full rows are in `results/benchmarks.csv`.
+
+| Concurrency | Success | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|
+| 1 | 100/100 | 0.62 req/s | 1.59s / 1.92s / 1.92s |
+| 2 | 100/100 | 0.83 req/s | 1.67s / 23.92s / 23.92s |
+| 10 | 11/100 | 0.71 req/s | 14.10s / 15.69s / 15.69s (89 requests failed with HTTP 503) |
+
+Concurrency 1 is clean and predictable. At concurrency 2, throughput barely improves but
+one request spikes to about 24s, which looks more like Cloud Run cold-starting a second
+instance mid-run (a full container boot plus model load) than CPU contention inside a
+single instance. At concurrency 10 the single `--cpu=2` instance cannot keep up and
+Cloud Run starts shedding load with 503s. The real concurrency ceiling for this
+deployment sits well below 10, not the ~80 requests per instance that Cloud Run defaults
+to. I have not root-caused this against actual Cloud Run logs or metrics yet, so it is
+worth checking before relying on this deployment under real concurrent load.
+
+**Live RunPod GPU results.** 100 requests, RTX PRO 4500, same test image each run. Full
+rows are in `results/benchmarks.csv`.
+
+| Concurrency | Success | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|
+| 1 | 100/100 | 0.85 req/s | 0.97s / 2.65s / 2.65s |
+| 2 | 100/100 | 2.04 req/s | 0.85s / 2.20s / 2.20s |
+| 10 | 100/100 | 7.45 req/s | 1.16s / 3.19s / 3.19s |
+
+Zero failures at any concurrency level, with no cold-start cliff and no dropped
+requests, unlike Cloud Run. Throughput scales cleanly (0.85 → 2.04 → 7.45 req/s), which
+fits one dedicated GPU taking on more in-flight requests without contention. One oddity
+is that latency is not monotonic with concurrency. Concurrency 1 (0.97s median, 2.65s
+p99) is worse than concurrency 2 (0.85s, 2.20s). A direct `/predict` call measured
+single-request inference at about 334ms, so most of the latency in every row above is
+request and network overhead through the RunPod proxy tunnel rather than GPU compute.
+That probably explains the ordering, with proxy jitter dominating over real concurrency
+effects at this scale, though I have not confirmed it against server-side logs. At
+concurrency 10, GPU inference does roughly **10x the throughput of Cloud Run** at the
+same concurrency (7.45 vs 0.71 req/s). The two are not directly comparable, since one is
+a dedicated GPU pod and the other an autoscaled `--cpu=2` container, but it does put a
+number on the gap between the two serving options I have now.
+
+*(Getting a clean run took some manual patching on the pod. The RunPod image's baked-in
+`torch==2.4.1+cu124` predates this GPU's architecture and threw `CUDA error: no kernel
+image is available for execution on the device` on every request, so I installed
+`torch==2.12.0` and `torchvision==0.27.0` to match `requirements.txt`. `fastapi` and
+`uvicorn` were missing entirely, since the serving app had never run on this image
+before. Both trace back to the same cause. `runpod/Dockerfile` has not been rebuilt
+since `requirements.txt` picked up those deps and versions. A rebuild and repush would
+save future pods from the same patching, see `docs/runpod_setup.md`.)*
+
+---
+
+## Project Structure
+
+```
+PSPNet_mlops/
+├── configs/
+│   └── config.yaml        # All hyperparameters
+├── data/
+│   ├── camvid/            # CamVid dataset (DVC managed)
+│   └── camvid.dvc         # DVC pointer
+├── flows/
+│   └── training_flow.py   # Prefect training pipeline
+├── src/
+│   ├── models/
+│   │   ├── resnet.py      # ResNet-50 backbone (deep base + dilated)
+│   │   └── pspnet.py      # PSPNet + PPM
+│   ├── data/
+│   │   └── dataset.py     # CamVid dataloader
+│   ├── train.py           # Training loop + MLflow tracking
+│   └── evaluate.py        # mIoU evaluation
+└── checkpoints/           # Saved model weights
+```
+
+---
+
+## Roadmap
+
+**Shipped.** Model and training pipeline, DVC-versioned data, MLflow tracking and model
+registry, Prefect orchestration with a validation gate, FastAPI serving deployed to
+Cloud Run via CI/CD, Prometheus metrics, and the load-testing tooling above. Details are
+in the sections above.
+
+**Next.**
+- [ ] Grafana dashboard for the exposed Prometheus metrics
+- [ ] Evidently AI drift detection plus threshold-triggered retraining
+- [ ] Champion-Challenger, so a retrained model is promoted only when it beats the incumbent
+- [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
+- [ ] End-to-end automated test (drift → retrain → evaluate → deploy)
+- [ ] Architecture diagram, demo video, resume writeup
