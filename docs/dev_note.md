@@ -12,7 +12,7 @@ Deploy the PSPNet serving image to Cloud Run automatically on push to `main`, us
 
 **APIs enabled**: `run.googleapis.com`, `artifactregistry.googleapis.com`, `iamcredentials.googleapis.com`, `sts.googleapis.com`, `cloudresourcemanager.googleapis.com`
 
-**Artifact Registry**: Docker repo `pspnet-serving` in `us-central1`, holds the serving images built from the project `Dockerfile`.
+**Artifact Registry**: Docker repo `pspnet-serving` in `us-central1`, holds the serving images built from `serving/Dockerfile`.
 
 **Service account**: `github-ci-deploy@bamboo-climate-497404-a7.iam.gserviceaccount.com`, with roles:
 - `roles/artifactregistry.writer` — push images

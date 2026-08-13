@@ -28,6 +28,7 @@ mlartifacts/
 
 # env files
 .env
+secrets.env
 
 # credentials
 gcp-key.json

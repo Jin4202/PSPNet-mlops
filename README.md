@@ -81,53 +81,25 @@ Training → Serving → Monitoring → Automated Retraining.
 
 ## Quickstart (RunPod)
 
-### 1. Clone
-```bash
-git clone https://github.com/Jin4202/PSPNet-mlops.git
-cd PSPNet_mlops
-```
+Pods launch from a custom image (`runpod/Dockerfile`) with the training environment
+pre-installed; a `setup.sh` baked into that image handles GCP/GitHub auth and pulls the
+repo + DVC data — no browser-based auth flow needed on the pod. Full one-time setup
+(building the image, creating the scoped GCP service account) is in
+[`docs/runpod_setup.md`](docs/runpod_setup.md).
 
-### 2. Install
-```bash
-pip install torch torchvision mlflow pyyaml dvc dvc-gs pillow numpy --ignore-installed blinker
-```
+**First pod on a given Network Volume** (one-time — `secrets.env` and the DVC cache
+persist on the volume across future pods, so this isn't a repeat-every-time step):
+1. Launch a pod from the built image, with a Network Volume mounted at `/workspace`.
+2. SSH in (Pod → Connect → SSH over exposed TCP).
+3. Copy `runpod/secrets.env.example` to `secrets.env` locally, fill in your GCP
+   service-account key (see `docs/runpod_setup.md`), and upload it to
+   `/workspace/secrets.env` (paste into `nano secrets.env`, or `scp`).
+4. Run `setup.sh`.
 
-### 3. GCS Auth
+**Every later pod on the same volume:** SSH in, run `setup.sh` again — it's idempotent
+and picks up the credentials/data already on the volume.
 
-**Step 1 — Install gcloud CLI (local)**
-```bash
-brew install --cask google-cloud-sdk
-```
-
-**Step 2 — Login & project setup (local)**
-```bash
-gcloud auth login
-gcloud config set project <project-id>
-gcloud auth application-default login
-gcloud auth application-default set-quota-project <project-id>
-```
-
-> Check project-id: `gcloud projects describe <project-number> --format="value(projectId)"`
-
-**Step 3 — Copy credentials to RunPod (local)**
-```bash
-# RunPod SSH: Pod → Connect → SSH over exposed TCP
-# e.g. ssh root@69.30.85.12 -p 22166 -i ~/.ssh/id_ed25519
-
-ssh root@<runpod-ip> -p <runpod-port> -i ~/.ssh/id_ed25519 \
-  "mkdir -p /root/.config/gcloud"
-
-scp -P <runpod-port> -i ~/.ssh/id_ed25519 \
-  ~/.config/gcloud/application_default_credentials.json \
-  root@<runpod-ip>:/root/.config/gcloud/application_default_credentials.json
-```
-
-### 4. Data
-```bash
-dvc pull
-```
-
-### 5. MLflow Server (Terminal A)
+### MLflow Server (Terminal A)
 ```bash
 mlflow server \
   --host 0.0.0.0 \
@@ -139,7 +111,7 @@ mlflow server \
 
 > MLflow UI on RunPod: Pod → Connect → HTTP 5000
 
-### 6. Train (Terminal B)
+### Train (Terminal B)
 ```bash
 python src/train.py --config configs/config.yaml
 ```
