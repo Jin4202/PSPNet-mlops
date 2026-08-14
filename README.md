@@ -387,4 +387,4 @@ Champion-Challenger promotion. Details are in the sections above.
       to actually execute the retrain)
 - [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
 - [ ] End-to-end automated test (drift → retrain → evaluate → deploy)
-- [ ] Architecture diagram, demo video, resume writeup
+- [ ] Architecture diagram, demo
