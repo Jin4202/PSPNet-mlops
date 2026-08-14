@@ -80,3 +80,36 @@ def load_model(cfg: dict, device: torch.device):
     model.load_state_dict(ckpt["state_dict"])
     model.to(device).eval()
     return model, f"checkpoint:{ckpt_path}"
+
+
+def get_best_val_miou(model_name: str, stage: str) -> tuple[float, str]:
+    """
+    Look up the best_val_miou metric for whichever model version is at a given
+    registry stage ("latest" means highest version number, not a real stage).
+
+    Shared by scripts/check_validation_gate.py (deploy-time gate re-check) and
+    flows/training_flow.py's promote_champion_task (Champion-Challenger).
+    """
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient()
+
+    if stage == "latest":
+        versions = client.search_model_versions(f"name='{model_name}'")
+        if not versions:
+            raise LookupError(f"No versions found for registered model '{model_name}'")
+        version = max(versions, key=lambda v: int(v.version))
+    else:
+        versions = client.get_latest_versions(model_name, stages=[stage])
+        if not versions:
+            raise LookupError(f"No '{stage}' version found for registered model '{model_name}'")
+        version = versions[0]
+
+    run = client.get_run(version.run_id)
+    miou = run.data.metrics.get("best_val_miou")
+    if miou is None:
+        raise LookupError(
+            f"Run '{version.run_id}' (model '{model_name}' v{version.version}) "
+            f"has no 'best_val_miou' metric logged."
+        )
+    return miou, version.version

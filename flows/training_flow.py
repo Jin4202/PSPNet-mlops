@@ -31,6 +31,7 @@ import mlflow
 import mlflow.pytorch
 import torch
 import yaml
+from mlflow.tracking import MlflowClient
 from prefect import flow, get_run_logger, task
 from torch import nn
 
@@ -38,6 +39,7 @@ from torch import nn
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.model_loader import get_best_val_miou
 from src.data.dataset import build_loaders
 from src.evaluate import evaluate
 from src.models.pspnet import build_model
@@ -329,6 +331,62 @@ def register_model_task(eval_result: dict, run_id: str, cfg: dict) -> str:
 
 
 # ─────────────────────────────────────────────
+# Task 6 — Champion-Challenger promotion
+# ─────────────────────────────────────────────
+
+@task(name="promote-champion")
+def promote_champion_task(eval_result: dict, run_id: str, registered_version: str, cfg: dict) -> str:
+    """
+    Promote the newly registered version to the "Production" stage, but only
+    if it beats the current champion's best_val_miou (or there is no
+    champion yet). A model that clears the validation gate still isn't
+    necessarily better than what's already serving — this is that check.
+
+    Returns a status string: "promoted (first champion)", "promoted
+    (beat prior champion)", or "not promoted (challenger did not beat champion)".
+    """
+    logger = get_run_logger()
+    cc_cfg = cfg["champion_challenger"]
+    mlflow_cfg = cfg["mlflow"]
+    model_name = mlflow_cfg["model_name"]
+    stage = cc_cfg["production_stage"]
+
+    if not cc_cfg["enabled"]:
+        logger.info("Champion-Challenger disabled in config — skipping promotion.")
+        return "not promoted (champion-challenger disabled)"
+
+    challenger_miou = eval_result["best_val_miou"]
+
+    try:
+        champion_miou, champion_version = get_best_val_miou(model_name, stage)
+    except LookupError:
+        client = MlflowClient()
+        client.transition_model_version_stage(model_name, registered_version, stage=stage)
+        logger.info(
+            f"[Champion-Challenger] No prior '{stage}' version — "
+            f"v{registered_version} (mIoU={challenger_miou:.4f}) promoted as first champion."
+        )
+        return "promoted (first champion)"
+
+    if challenger_miou > champion_miou:
+        client = MlflowClient()
+        client.transition_model_version_stage(
+            model_name, registered_version, stage=stage, archive_existing_versions=True
+        )
+        logger.info(
+            f"[Champion-Challenger] v{registered_version} (mIoU={challenger_miou:.4f}) "
+            f"beat champion v{champion_version} (mIoU={champion_miou:.4f}) — promoted."
+        )
+        return "promoted (beat prior champion)"
+
+    logger.info(
+        f"[Champion-Challenger] v{registered_version} (mIoU={challenger_miou:.4f}) "
+        f"did not beat champion v{champion_version} (mIoU={champion_miou:.4f}) — not promoted."
+    )
+    return "not promoted (challenger did not beat champion)"
+
+
+# ─────────────────────────────────────────────
 # Flow — wire tasks together
 # ─────────────────────────────────────────────
 
@@ -362,8 +420,10 @@ def training_flow(config_path: str = "configs/config.yaml"):
     )
     eval_result               = evaluate_model_task(best_val_miou, cfg)
     model_version_uri         = register_model_task(eval_result, run_id, cfg)
+    registered_version        = model_version_uri.rsplit("/", 1)[-1]
+    promotion_status          = promote_champion_task(eval_result, run_id, registered_version, cfg)
 
-    logger.info(f"Pipeline complete. Model URI: {model_version_uri}")
+    logger.info(f"Pipeline complete. Model URI: {model_version_uri} ({promotion_status})")
     return model_version_uri
 
 

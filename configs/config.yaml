@@ -49,6 +49,14 @@ validation_gate:
   min_miou: 0.55
   enabled: true
 
+champion_challenger:
+  enabled: true
+  production_stage: "Production"
+
+drift_detection:
+  enabled: true
+  drift_share_threshold: 0.5
+
 prefect:
   flow_name: training-flow
   deployment_name: pspnet-training

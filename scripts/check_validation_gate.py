@@ -15,33 +15,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from mlflow.tracking import MlflowClient
-
-from app.model_loader import _is_reachable, load_config
-
-
-def get_best_val_miou(model_name: str, stage: str) -> tuple[float, str]:
-    client = MlflowClient()
-
-    if stage == "latest":
-        versions = client.search_model_versions(f"name='{model_name}'")
-        if not versions:
-            raise LookupError(f"No versions found for registered model '{model_name}'")
-        version = max(versions, key=lambda v: int(v.version))
-    else:
-        versions = client.get_latest_versions(model_name, stages=[stage])
-        if not versions:
-            raise LookupError(f"No '{stage}' version found for registered model '{model_name}'")
-        version = versions[0]
-
-    run = client.get_run(version.run_id)
-    miou = run.data.metrics.get("best_val_miou")
-    if miou is None:
-        raise LookupError(
-            f"Run '{version.run_id}' (model '{model_name}' v{version.version}) "
-            f"has no 'best_val_miou' metric logged."
-        )
-    return miou, version.version
+from app.model_loader import _is_reachable, get_best_val_miou, load_config
 
 
 def check_gate(cfg: dict, stage: str) -> tuple[bool, str]:

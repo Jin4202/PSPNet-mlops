@@ -43,7 +43,7 @@ def test_gate_passes_when_miou_meets_threshold(cfg, monkeypatch):
         versions_by_stage={"Production": [version]},
         runs={"run-1": FakeRun({"best_val_miou": 0.60})},
     )
-    monkeypatch.setattr(gate, "MlflowClient", lambda: client)
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
 
     passed, msg = gate.check_gate(cfg, stage="Production")
 
@@ -57,7 +57,7 @@ def test_gate_blocks_when_miou_below_threshold(cfg, monkeypatch):
         versions_by_stage={"Production": [version]},
         runs={"run-2": FakeRun({"best_val_miou": 0.30})},
     )
-    monkeypatch.setattr(gate, "MlflowClient", lambda: client)
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
 
     passed, msg = gate.check_gate(cfg, stage="Production")
 
@@ -71,7 +71,7 @@ def test_gate_uses_highest_version_for_latest_stage(cfg, monkeypatch):
         versions_by_name=[v1, v2],
         runs={"run-2": FakeRun({"best_val_miou": 0.70})},
     )
-    monkeypatch.setattr(gate, "MlflowClient", lambda: client)
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
 
     passed, msg = gate.check_gate(cfg, stage="latest")
 
@@ -81,7 +81,7 @@ def test_gate_uses_highest_version_for_latest_stage(cfg, monkeypatch):
 
 def test_gate_raises_when_no_version_found(cfg, monkeypatch):
     client = FakeClient(versions_by_stage={})
-    monkeypatch.setattr(gate, "MlflowClient", lambda: client)
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
 
     with pytest.raises(LookupError, match="No 'Production' version"):
         gate.check_gate(cfg, stage="Production")
@@ -93,7 +93,7 @@ def test_gate_raises_when_metric_missing(cfg, monkeypatch):
         versions_by_stage={"Production": [version]},
         runs={"run-5": FakeRun({})},
     )
-    monkeypatch.setattr(gate, "MlflowClient", lambda: client)
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: client)
 
     with pytest.raises(LookupError, match="best_val_miou"):
         gate.check_gate(cfg, stage="Production")

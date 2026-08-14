@@ -28,11 +28,13 @@ Validation Gate (blocks registry on low mIoU)
         ↓
 MLflow Model Registry
         ↓
+Champion-Challenger (promotes only if it beats the current champion)
+        ↓
 GitHub Actions CI/CD (lint → test → build → deploy)
         ↓
 FastAPI Serving (Docker) on GCP Cloud Run
         ↓
-Prometheus Metrics  →  Grafana dashboard (planned)
+Prometheus Metrics  →  Grafana dashboard
         ↓
 Evidently Drift Detection  →  Auto-Retrain Trigger (planned)
 ```
@@ -133,6 +135,17 @@ Registry, and deploy it to Cloud Run (`pspnet-serving`, `us-central1`). Auth goe
 through Workload Identity Federation, so GitHub's OIDC token is exchanged for
 short-lived GCP credentials and no service-account key sits in the repo. Full setup
 (IAM roles, WIF pool and provider, repo variables) is in `docs/dev_note.md`.
+
+**Model promotion.** Passing the validation gate isn't the same as being the best model
+available. `flows/training_flow.py`'s `promote_champion_task` runs right after
+registration and only promotes a new version to the `"Production"` registry stage if its
+`best_val_miou` beats whatever's already there (the first model registered becomes
+champion unconditionally). `app/model_loader.py` can serve from that stage by setting
+`MODEL_STAGE_OR_VERSION=Production`. The live Cloud Run deployment doesn't do this
+today (Cloud Run can't reach the MLflow tracking server, so it falls back to the
+checkpoint baked into the image), but any deployment target with MLflow access gets the
+gate automatically. Disable via `champion_challenger.enabled: false` in
+`configs/config.yaml` if needed.
 
 ---
 
@@ -279,6 +292,63 @@ save future pods from the same patching, see `docs/runpod_setup.md`.)*
 
 ---
 
+## Monitoring
+
+`monitoring/docker-compose.yml` runs the serving app plus a Prometheus + Grafana stack,
+fully provisioned (datasource and dashboard load automatically, no manual UI setup):
+
+```bash
+docker compose -f monitoring/docker-compose.yml up --build
+```
+
+Send some traffic so the dashboard has something to show:
+```bash
+python scripts/load_test.py --url http://localhost:8000/predict \
+  --image data/camvid/test/0001TP_008550.png --requests 50 --concurrency 5 --no-record
+```
+
+Then open Grafana at `localhost:3000` (`admin` / `admin`). The "PSPNet Serving"
+dashboard is already there, with request rate, error rate, overall request latency
+(p50/p95/p99), and inference-only latency (p50/p95/p99, isolating model compute from
+request overhead, same distinction as the Benchmarking section above). Prometheus itself
+is at `localhost:9090` if you want to query metrics directly; `/targets` should show the
+app as `UP`. Needs `checkpoints/best.pth` locally first (`dvc pull`) since the `app`
+service builds from `serving/Dockerfile`, same prerequisite as any local run of the
+serving image.
+
+---
+
+## Drift Detection
+
+`scripts/check_drift.py` checks whether a batch of images has drifted from the CamVid
+training distribution, using Evidently over per-image summary statistics (channel
+mean/std, brightness, a sharpness proxy; see `src/drift.py` for why raw pixels aren't
+used directly). Reference set is `data/camvid/train.txt`. Current set defaults to the
+CamVid test split:
+
+```bash
+python scripts/check_drift.py --current-dir data/camvid/test
+```
+
+Exit code 0 = drift share at or under `drift_detection.drift_share_threshold` in
+`configs/config.yaml`, 1 = blocked. Either way an HTML report is saved to
+`results/drift_report_<timestamp>.html`.
+
+**A genuine finding while building this**: the CamVid train/test split itself shows real
+drift, every one of the 8 feature columns, drift_share=1.00. It's not a bug: train and
+test are different video sequences, and the test split really does run ~8-9/255 darker
+on average (checked directly, mean brightness 107.9 on train vs. 99.1 on test). A random
+sample drawn from `train.txt` itself passes cleanly (drift_share=0.00) against the full
+train set, confirming the detector isn't just always flagging drift. Point `--current-dir`
+at that kind of same-distribution sample for a clean PASSED baseline, or at deliberately
+corrupted images to demonstrate a clearer drift case.
+
+Not yet wired to anything downstream. `flows/training_flow.py`'s Champion-Challenger
+step and this drift check are independent gates today; the drift-triggered retraining
+loop mentioned in the Architecture diagram is on the [Roadmap](#roadmap).
+
+---
+
 ## Project Structure
 
 ```
@@ -307,13 +377,14 @@ PSPNet_mlops/
 
 **Shipped.** Model and training pipeline, DVC-versioned data, MLflow tracking and model
 registry, Prefect orchestration with a validation gate, FastAPI serving deployed to
-Cloud Run via CI/CD, Prometheus metrics, and the load-testing tooling above. Details are
-in the sections above.
+Cloud Run via CI/CD, Prometheus metrics, the load-testing tooling, a provisioned
+Grafana/Prometheus dashboard, Evidently drift detection with a threshold gate, and
+Champion-Challenger promotion. Details are in the sections above.
 
 **Next.**
-- [ ] Grafana dashboard for the exposed Prometheus metrics
-- [ ] Evidently AI drift detection plus threshold-triggered retraining
-- [ ] Champion-Challenger, so a retrained model is promoted only when it beats the incumbent
+- [ ] Drift-triggered retraining: wire `scripts/check_drift.py`'s exit code into a
+      Prefect deployment trigger for `flows/training_flow.py` (needs a live RunPod pod
+      to actually execute the retrain)
 - [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
 - [ ] End-to-end automated test (drift → retrain → evaluate → deploy)
 - [ ] Architecture diagram, demo video, resume writeup
