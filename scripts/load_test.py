@@ -53,7 +53,8 @@ async def run_load_test(url, image_path, total_requests, concurrency, timeout):
     sem = asyncio.Semaphore(concurrency)
     results = []
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         start = time.perf_counter()
         tasks = [
             _fire_request(client, url, image_bytes, filename, sem, results)
