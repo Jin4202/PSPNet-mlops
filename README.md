@@ -298,13 +298,19 @@ continuation of it. All runs tagged `runpod-gpu-concurrency-sweep` in
 `httpx` connection pool to `--concurrency` (it previously defaulted to 100 max
 connections, which would have silently capped anything tested above that).
 
-| Concurrency | Success | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|
-| 20 | 200/200 | 13.15 req/s | 1.29s / 3.15s / 3.35s |
-| 40 | 200/200 | 15.08 req/s | 2.14s / 4.93s / 5.74s |
-| 60 | 200/200 | 16.18 req/s | 3.15s / 6.99s / 7.39s |
-| 80 | 200/200 | 15.32 req/s | 3.82s / 7.96s / 8.84s |
-| 100 | 200/200 | 15.26 req/s | 4.82s / 11.27s / 11.50s |
+| Concurrency | Success | Failure | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|---|
+| 20 | 200/200 | 0% | 13.15 req/s | 1.29s / 3.15s / 3.35s |
+| 40 | 200/200 | 0% | 15.08 req/s | 2.14s / 4.93s / 5.74s |
+| 60 | 200/200 | 0% | 16.18 req/s | 3.15s / 6.99s / 7.39s |
+| 80 | 200/200 | 0% | 15.32 req/s | 3.82s / 7.96s / 8.84s |
+| 100 | 200/200 | 0% | 15.26 req/s | 4.82s / 11.27s / 11.50s |
+| 175 | 350/350 | 0% | 16.85 req/s | 7.23s / 18.26s / 19.00s |
+| 200 | 400/400 | 0% | 17.53 req/s | 8.02s / 21.01s / 22.03s |
+| 500 | 795/800 | 0.6% | 17.53 req/s | 21.13s / 40.74s / 45.63s |
+| 1000 | 1361/1500 | 9.3% | 20.09 req/s | 39.81s / 70.29s / 74.65s |
+| 2000 | 1767/3000 | 41.1% | 27.01 req/s | 59.50s / 110.01s / 111.01s |
+| 3000 | 1497/4500 | 66.7% | 33.40 req/s | 51.75s / 107.48s / 108.88s |
 
 Throughput scales cleanly up to concurrency 20, then flattens hard right at 40
 (15.08 req/s) and barely moves through 100 (15.26 req/s) while latency keeps climbing in
@@ -316,24 +322,14 @@ adds its own batching/semaphore around the single shared model instance. So **~4
 practical ceiling for keeping latency reasonable** (p99 still under 5s) — past that,
 extra concurrency just buys client-side wait time, not more throughput, at this scale.
 
-**Pushing past the soft cap.** That 40-request ceiling turned out to only be the *soft*
-one. Pushing much further eventually does get more real work out of the box, at the cost
-of both latency and reliability:
-
-| Concurrency | Success | Failure | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|---|
-| 175 | 350/350 | 0% | 16.85 req/s | 7.23s / 18.26s / 19.00s |
-| 200 | 400/400 | 0% | 17.53 req/s | 8.02s / 21.01s / 22.03s |
-| 500 | 795/800 | 0.6% | 17.53 req/s | 21.13s / 40.74s / 45.63s |
-| 1000 | 1361/1500 | 9.3% | 20.09 req/s | 39.81s / 70.29s / 74.65s |
-| 2000 | 1767/3000 | 41.1% | 27.01 req/s | 59.50s / 110.01s / 111.01s |
-| 3000 | 1497/4500 | 66.7% | 33.40 req/s | 51.75s / 107.48s / 108.88s |
-
-(Client `--timeout` was raised from the 30s default — up to 240s at concurrency 3000 —
-so these failures aren't just the client giving up early; every failure was a connection-
-level error with no response at all, not a clean HTTP error code from the server.)
-Throughput keeps climbing well past 40 (up to 33 req/s at concurrency 3000), so the
-server is doing genuinely more concurrent work at these levels, not just queueing —
+That 40-request ceiling turned out to only be the *soft* one. Pushing much further
+(concurrency 175 through 3000, client `--timeout` raised from the 30s default up to 240s
+so these failures aren't just the client giving up early — every failure was a
+connection-level error with no response at all, not a clean HTTP error code from the
+server) eventually does get more real work out of the box, at the cost of both latency
+and reliability. Throughput keeps climbing well past 40 (up to 33 req/s at concurrency
+3000), so the server is doing genuinely more concurrent work at these levels, not just
+queueing —
 `nvidia-smi` on the pod confirmed it: GPU utilization was ~0% up through concurrency
 ~150, started registering (up to 43%) around 200, and climbed to 30-53% by 2000-3000.
 VRAM barely moved the entire time, from ~1.5GB idle to ~1.8GB at the highest concurrency
@@ -506,6 +502,3 @@ to evaluate to register/promote, and a live concurrency sweep on the RunPod GPU 
 40 requests, a rising failure rate well past that, and one unreproduced server crash
 pointing to a real concurrency-safety gap in the serving code. Details are in the
 sections above.
-
-**Next.**
-- [ ] Architecture diagram, demo video, resume writeup
