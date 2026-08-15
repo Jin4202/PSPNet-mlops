@@ -39,6 +39,7 @@ docker==7.1.0
 dpath==2.2.0
 dulwich==1.2.4
 dvc-data==3.18.3
+dvc-gs==3.1.0
 dvc-http==2.32.0
 dvc-objects==5.2.0
 dvc-render==1.0.2

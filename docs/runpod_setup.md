@@ -125,3 +125,33 @@ future pod hits the same CUDA error on a different GPU model.)
 3. RunPod gives an HTTPS proxy URL for the exposed port (Connect panel), pattern
    `https://<POD_ID>-8000.proxy.runpod.net`. Verify with `curl <url>/health` before
    benchmarking.
+
+## Drift detection and DVC-over-GCS on a pod
+
+Same image-staleness pattern as above, found while exercising
+`scripts/trigger_retrain_on_drift.py` against a live pod on 2026-08-15:
+
+- **`dvc-gs` was missing from `requirements.txt` entirely** (not just image staleness) —
+  `dvc pull` against the `gs://pspnet-mlops-dvc` remote failed with
+  `Could not determine bucket type ... requires 'dvc-gs' to be installed`. Now fixed in
+  `requirements.txt`; a pod on the current stale image still needs it installed manually:
+  ```bash
+  python3 -m pip install dvc-gs
+  ```
+- **`evidently` is in `requirements.txt`** (added for drift detection) **but the
+  currently-pushed image predates it**, so `scripts/demo_drift_scenario.py` and
+  `scripts/check_drift.py` fail with `ModuleNotFoundError: No module named 'evidently'`
+  until installed manually:
+  ```bash
+  python3 -m pip install evidently
+  ```
+
+Both are one-time per pod (or permanent once the image is rebuilt and repushed, same as
+the serving-API dependencies above). Also, if you get `Anonymous caller does not have
+storage.objects.list access` from `dvc pull` after `setup.sh` already ran once,
+`GOOGLE_APPLICATION_CREDENTIALS` is only exported inside `setup.sh`'s own process (see
+`setup.sh`'s own note when it finishes) — re-export it in any new shell before running
+`dvc`/`gcloud` manually:
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="${HOME}/.config/gcloud/runpod-sa-key.json"
+```

@@ -356,10 +356,22 @@ python scripts/trigger_retrain_on_drift.py --current-dir data/camvid/test
 
 It fires the trigger and returns immediately. It doesn't wait for the retrain to
 finish, since the flow's own validation gate and Champion-Challenger step (above)
-already decide whether the retrained model is any good. Actually running a real
-retrain still needs a live RunPod worker, same as manual training does; this script
-is testable end to end without one (`tests/test_drift_retrain_integration.py` mocks
-Prefect and drift results to check both branches).
+already decide whether the retrained model is any good. This script is testable end
+to end without a live worker (`tests/test_drift_retrain_integration.py` mocks Prefect
+and drift results to check both branches).
+
+**Live RunPod verification.** Ran the full path on a real RunPod pod on 2026-08-15:
+a Prefect server, worker, and the `training-flow/pspnet-training` deployment all on
+the pod, then fired the trigger against the corrupted images from the drift
+demonstration below. The trigger correctly refused to fire when `PREFECT_API_URL`
+wasn't set in the shell (failed closed, exit 1, no silent no-op), then fired cleanly
+once it was. The worker picked up the flow run and executed `load-data`, `prepare-model`,
+and `train-model` end to end (a throwaway 3-epoch config, since the point was
+exercising the wiring, not producing a good model), reaching best val mIoU 0.2251.
+`register-model` then correctly raised `[Validation Gate BLOCKED] Val mIoU 0.2251 <
+threshold 0.55`, and the flow failed cleanly rather than registering or promoting
+that model — the gate did its job against a real drift-triggered retrain, not just
+in tests.
 
 **Demonstrating the effect.** `scripts/demo_drift_scenario.py` corrupts real CamVid
 test images (darkened + blurred, simulating low-light/foggy driving) and measures the
@@ -406,13 +418,10 @@ PSPNet_mlops/
 registry, Prefect orchestration with a validation gate, FastAPI serving deployed to
 Cloud Run via CI/CD, Prometheus metrics, the load-testing tooling, a provisioned
 Grafana/Prometheus dashboard, Evidently drift detection with a threshold gate,
-Champion-Challenger promotion, a drift-triggered retraining hook, a real corrupted-image
-drift demonstration (measured, not asserted), and an automated test covering the local
-half of drift to retrain to evaluate to register/promote. Details are in the sections
-above.
+Champion-Challenger promotion, a drift-triggered retraining hook verified end to end
+against a live RunPod Prefect worker, a real corrupted-image drift demonstration
+(measured, not asserted), and an automated test covering the local half of drift to
+retrain to evaluate to register/promote. Details are in the sections above.
 
 **Next.**
-- [ ] Actually exercise `scripts/trigger_retrain_on_drift.py` against a live RunPod
-      Prefect worker (everything up to that point is built and tested; this is the one
-      remaining manual, RunPod-dependent step)
 - [ ] Architecture diagram, demo video, resume writeup
