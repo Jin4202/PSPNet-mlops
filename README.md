@@ -36,7 +36,7 @@ FastAPI Serving (Docker) on GCP Cloud Run
         ↓
 Prometheus Metrics  →  Grafana dashboard
         ↓
-Evidently Drift Detection  →  Auto-Retrain Trigger (planned)
+Evidently Drift Detection  →  Auto-Retrain Trigger
 ```
 
 Each stage runs on its own. `flows/training_flow.py` drives training end to end, `app/`
@@ -343,9 +343,36 @@ train set, confirming the detector isn't just always flagging drift. Point `--cu
 at that kind of same-distribution sample for a clean PASSED baseline, or at deliberately
 corrupted images to demonstrate a clearer drift case.
 
-Not yet wired to anything downstream. `flows/training_flow.py`'s Champion-Challenger
-step and this drift check are independent gates today; the drift-triggered retraining
-loop mentioned in the Architecture diagram is on the [Roadmap](#roadmap).
+**Triggering a retrain.** `scripts/trigger_retrain_on_drift.py` runs the same check
+and, if blocked, calls Prefect's `run_deployment` API against
+`training-flow/pspnet-training` (the deployment `flows/training_flow.py::create_deployment`
+registers) rather than waiting for someone to notice. It checks `PREFECT_API_URL` is
+reachable first and exits 1 (not a silent no-op) if drift is detected but there's no
+worker to hand it to:
+
+```bash
+python scripts/trigger_retrain_on_drift.py --current-dir data/camvid/test
+```
+
+It fires the trigger and returns immediately. It doesn't wait for the retrain to
+finish, since the flow's own validation gate and Champion-Challenger step (above)
+already decide whether the retrained model is any good. Actually running a real
+retrain still needs a live RunPod worker, same as manual training does; this script
+is testable end to end without one (`tests/test_drift_retrain_integration.py` mocks
+Prefect and drift results to check both branches).
+
+**Demonstrating the effect.** `scripts/demo_drift_scenario.py` corrupts real CamVid
+test images (darkened + blurred, simulating low-light/foggy driving) and measures the
+impact directly rather than asserting it:
+
+```bash
+python scripts/demo_drift_scenario.py --num-images 30
+```
+
+Real run on the checkpoint in this repo: **mIoU dropped from 0.4341 to 0.0483** on the
+corrupted batch (delta -0.3858), and the drift check correctly flagged the corrupted
+directory as BLOCKED (drift_share=1.00). Corrupted images and a drift report are left
+under `results/drift_demo/` for inspection.
 
 ---
 
@@ -378,13 +405,14 @@ PSPNet_mlops/
 **Shipped.** Model and training pipeline, DVC-versioned data, MLflow tracking and model
 registry, Prefect orchestration with a validation gate, FastAPI serving deployed to
 Cloud Run via CI/CD, Prometheus metrics, the load-testing tooling, a provisioned
-Grafana/Prometheus dashboard, Evidently drift detection with a threshold gate, and
-Champion-Challenger promotion. Details are in the sections above.
+Grafana/Prometheus dashboard, Evidently drift detection with a threshold gate,
+Champion-Challenger promotion, a drift-triggered retraining hook, a real corrupted-image
+drift demonstration (measured, not asserted), and an automated test covering the local
+half of drift to retrain to evaluate to register/promote. Details are in the sections
+above.
 
 **Next.**
-- [ ] Drift-triggered retraining: wire `scripts/check_drift.py`'s exit code into a
-      Prefect deployment trigger for `flows/training_flow.py` (needs a live RunPod pod
-      to actually execute the retrain)
-- [ ] Drift demonstration scenario (OOD images → measurable mIoU degradation)
-- [ ] End-to-end automated test (drift → retrain → evaluate → deploy)
-- [ ] Architecture diagram, demo
+- [ ] Actually exercise `scripts/trigger_retrain_on_drift.py` against a live RunPod
+      Prefect worker (everything up to that point is built and tested; this is the one
+      remaining manual, RunPod-dependent step)
+- [ ] Architecture diagram, demo video, resume writeup

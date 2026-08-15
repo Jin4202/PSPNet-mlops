@@ -10,12 +10,15 @@ good enough to catch the kind of distribution shift a demo needs to show
 maintain just for drift checking.
 """
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from evidently import DataDefinition, Dataset, Report
 from evidently.presets import DataDriftPreset
 from PIL import Image
+
+from src.data.dataset import parse_list
 
 
 def _image_features(path: str) -> dict:
@@ -84,3 +87,26 @@ def compute_drift(
         total_columns=len(reference_df.columns),
         report=result,
     )
+
+
+def check_drift_against_reference(cfg: dict, current_dir: str) -> DriftResult:
+    """
+    Builds the reference set from cfg['data']['train_list'] and checks every
+    .png in current_dir against it. Shared by scripts/check_drift.py,
+    scripts/trigger_retrain_on_drift.py, and scripts/demo_drift_scenario.py
+    so the reference-building logic lives in exactly one place.
+    """
+    data_cfg = cfg["data"]
+    reference_paths = [
+        img_path
+        for img_path, _lbl_path in parse_list(data_cfg["train_list"], data_root=data_cfg["dataset_path"].rstrip("/"))
+    ]
+
+    current_paths = sorted(str(p) for p in Path(current_dir).glob("*.png"))
+    if not current_paths:
+        raise FileNotFoundError(f"No .png images found in '{current_dir}'")
+
+    reference_df = extract_features(reference_paths)
+    current_df = extract_features(current_paths)
+    threshold = cfg["drift_detection"]["drift_share_threshold"]
+    return compute_drift(reference_df, current_df, threshold)

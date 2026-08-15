@@ -2,6 +2,7 @@ data:
   dataset_path: "data/camvid/"
   train_list: "data/camvid/train.txt"
   val_list:   "data/camvid/val.txt"
+  test_list:  "data/camvid/test.txt"
   num_classes: 11
   ignore_label: 255
 
