@@ -290,6 +290,37 @@ before. Both trace back to the same cause. `runpod/Dockerfile` has not been rebu
 since `requirements.txt` picked up those deps and versions. A rebuild and repush would
 save future pods from the same patching, see `docs/runpod_setup.md`.)*
 
+**Max concurrency sweep (2026-08-15).** Pushed further to find where the serving
+deployment actually caps out, on a different RunPod pod/GPU (**RTX PRO 4000 Blackwell**,
+24467 MiB VRAM) than the table above, so treat this as a separate data point rather than
+a continuation of it. 200 requests per run, same test image, tagged
+`runpod-gpu-concurrency-sweep` in `results/benchmarks.csv`:
+
+| Concurrency | Success | Throughput | Latency (median / p99 / max) |
+|---|---|---|---|
+| 20 | 200/200 | 13.15 req/s | 1.29s / 3.15s / 3.35s |
+| 40 | 200/200 | 15.08 req/s | 2.14s / 4.93s / 5.74s |
+| 60 | 200/200 | 16.18 req/s | 3.15s / 6.99s / 7.39s |
+| 80 | 200/200 | 15.32 req/s | 3.82s / 7.96s / 8.84s |
+| 100 | 200/200 | 15.26 req/s | 4.82s / 11.27s / 11.50s |
+
+Throughput scales cleanly up to concurrency 20, then flattens hard right at 40
+(15.08 req/s) and never moves again through 100 (15.26 req/s) — while latency keeps
+climbing in lockstep with concurrency (median 2.14s → 4.82s). That's the signature of
+requests queueing rather than more work getting done: `/predict` (`app/main.py`) runs
+inference via Starlette's `run_in_threadpool`, whose default AnyIO thread pool caps
+in-flight work at ~40 threads, and nothing in `app/main.py` or `app/model_loader.py`
+raises that limit or adds its own batching/semaphore around the single shared model
+instance. `nvidia-smi` on the pod during a sustained burst showed **0% GPU utilization
+and only 1538 / 24467 MiB VRAM used** — nowhere near saturated — which rules out the
+GPU itself as the ceiling here. Zero failures at any concurrency tested (100 requests all
+succeeded even at concurrency 100, well under the client's 30s timeout), so this is a
+soft, code-level cap, not a hard failure point: **the practical max useful concurrency
+for the current single-process deployment is around 40** — pushing higher just adds
+client-side wait time for the same ~15 req/s of actual throughput. Raising it further
+(a larger thread pool, multiple uvicorn workers, or true batched GPU inference) is a
+deliberate follow-up, not something this deployment does by default.
+
 ---
 
 ## Monitoring
@@ -420,8 +451,11 @@ Cloud Run via CI/CD, Prometheus metrics, the load-testing tooling, a provisioned
 Grafana/Prometheus dashboard, Evidently drift detection with a threshold gate,
 Champion-Challenger promotion, a drift-triggered retraining hook verified end to end
 against a live RunPod Prefect worker, a real corrupted-image drift demonstration
-(measured, not asserted), and an automated test covering the local half of drift to
-retrain to evaluate to register/promote. Details are in the sections above.
+(measured, not asserted), an automated test covering the local half of drift to retrain
+to evaluate to register/promote, and a live concurrency sweep on the RunPod GPU pod that
+found the current deployment's practical ceiling (~40 concurrent requests, capped by the
+serving app's default thread pool rather than the GPU). Details are in the sections
+above.
 
 **Next.**
 - [ ] Architecture diagram, demo video, resume writeup
