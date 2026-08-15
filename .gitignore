@@ -44,6 +44,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # MLflow local tracking db
 mlflow.db

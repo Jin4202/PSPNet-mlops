@@ -39,7 +39,7 @@ from torch import nn
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.model_loader import get_best_val_miou
+from app.model_loader import NoChampionError, get_best_val_miou
 from src.data.dataset import build_loaders
 from src.evaluate import evaluate
 from src.models.pspnet import build_model
@@ -344,11 +344,15 @@ def promote_champion_task(eval_result: dict, run_id: str, registered_version: st
 
     Returns a status string: "promoted (first champion)", "promoted
     (beat prior champion)", or "not promoted (challenger did not beat champion)".
+
+    If a champion version exists at the stage but its run has no
+    best_val_miou metric logged, this raises ChampionMetricMissingError
+    rather than silently promoting the challenger — a champion that can't be
+    compared against is a data problem to fix, not something to promote past.
     """
     logger = get_run_logger()
     cc_cfg = cfg["champion_challenger"]
-    mlflow_cfg = cfg["mlflow"]
-    model_name = mlflow_cfg["model_name"]
+    model_name = cfg["mlflow"]["model_name"]
     stage = cc_cfg["production_stage"]
 
     if not cc_cfg["enabled"]:
@@ -356,12 +360,14 @@ def promote_champion_task(eval_result: dict, run_id: str, registered_version: st
         return "not promoted (champion-challenger disabled)"
 
     challenger_miou = eval_result["best_val_miou"]
+    client = MlflowClient()
 
     try:
         champion_miou, champion_version = get_best_val_miou(model_name, stage)
-    except LookupError:
-        client = MlflowClient()
-        client.transition_model_version_stage(model_name, registered_version, stage=stage)
+    except NoChampionError:
+        client.transition_model_version_stage(
+            model_name, registered_version, stage=stage, archive_existing_versions=True
+        )
         logger.info(
             f"[Champion-Challenger] No prior '{stage}' version — "
             f"v{registered_version} (mIoU={challenger_miou:.4f}) promoted as first champion."
@@ -369,7 +375,6 @@ def promote_champion_task(eval_result: dict, run_id: str, registered_version: st
         return "promoted (first champion)"
 
     if challenger_miou > champion_miou:
-        client = MlflowClient()
         client.transition_model_version_stage(
             model_name, registered_version, stage=stage, archive_existing_versions=True
         )

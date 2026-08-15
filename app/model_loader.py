@@ -82,13 +82,26 @@ def load_model(cfg: dict, device: torch.device):
     return model, f"checkpoint:{ckpt_path}"
 
 
+class NoChampionError(LookupError):
+    """No registered model version exists at all, or none at the requested stage."""
+
+
+class ChampionMetricMissingError(LookupError):
+    """A version exists at the requested stage but its run has no best_val_miou metric."""
+
+
 def get_best_val_miou(model_name: str, stage: str) -> tuple[float, str]:
     """
     Look up the best_val_miou metric for whichever model version is at a given
     registry stage ("latest" means highest version number, not a real stage).
 
     Shared by scripts/check_validation_gate.py (deploy-time gate re-check) and
-    flows/training_flow.py's promote_champion_task (Champion-Challenger).
+    flows/training_flow.py's promote_champion_task (Champion-Challenger). Both
+    raised errors subclass LookupError, so a caller that only wants to fail
+    closed on any lookup problem (like check_validation_gate.py) can keep
+    catching the base LookupError; a caller that needs to tell "no champion
+    yet" apart from "champion exists but is unmeasurable" (like
+    promote_champion_task) can catch NoChampionError specifically.
     """
     from mlflow.tracking import MlflowClient
 
@@ -97,18 +110,18 @@ def get_best_val_miou(model_name: str, stage: str) -> tuple[float, str]:
     if stage == "latest":
         versions = client.search_model_versions(f"name='{model_name}'")
         if not versions:
-            raise LookupError(f"No versions found for registered model '{model_name}'")
+            raise NoChampionError(f"No versions found for registered model '{model_name}'")
         version = max(versions, key=lambda v: int(v.version))
     else:
         versions = client.get_latest_versions(model_name, stages=[stage])
         if not versions:
-            raise LookupError(f"No '{stage}' version found for registered model '{model_name}'")
+            raise NoChampionError(f"No '{stage}' version found for registered model '{model_name}'")
         version = versions[0]
 
     run = client.get_run(version.run_id)
     miou = run.data.metrics.get("best_val_miou")
     if miou is None:
-        raise LookupError(
+        raise ChampionMetricMissingError(
             f"Run '{version.run_id}' (model '{model_name}' v{version.version}) "
             f"has no 'best_val_miou' metric logged."
         )

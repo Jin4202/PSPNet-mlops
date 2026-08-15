@@ -13,6 +13,7 @@ import pytest
 from mlflow.tracking import MlflowClient
 from torch import nn
 
+from app.model_loader import ChampionMetricMissingError
 from flows import training_flow
 
 
@@ -25,6 +26,16 @@ def _register_version(model_name: str, miou: float) -> tuple[str, str]:
     """Create a real MLflow run (with a logged model + best_val_miou metric) and register it."""
     with mlflow.start_run() as run:
         mlflow.log_metric("best_val_miou", miou)
+        mlflow.pytorch.log_model(nn.Conv2d(3, 2, 1), "model")
+        run_id = run.info.run_id
+    registered = mlflow.register_model(f"runs:/{run_id}/model", model_name)
+    return registered.version, run_id
+
+
+def _register_version_without_metric(model_name: str) -> tuple[str, str]:
+    """Same as _register_version, but the run never logs best_val_miou (e.g. a version
+    promoted manually outside this flow, predating metric-logging)."""
+    with mlflow.start_run() as run:
         mlflow.pytorch.log_model(nn.Conv2d(3, 2, 1), "model")
         run_id = run.info.run_id
     registered = mlflow.register_model(f"runs:/{run_id}/model", model_name)
@@ -89,6 +100,27 @@ def test_worse_challenger_is_not_promoted(tmp_path):
 
     assert status == "not promoted (challenger did not beat champion)"
     assert _production_version(model_name) == v1
+
+
+def test_champion_with_missing_metric_blocks_promotion(tmp_path):
+    model_name = "cc-test-missing-metric"
+    mlflow.set_tracking_uri(f"sqlite:///{tmp_path / 'mlflow.db'}")
+    cfg = _cfg(tmp_path, model_name)
+
+    # A "champion" that exists at Production but was never run through this flow
+    # (e.g. promoted manually), so its run has no best_val_miou metric.
+    champion_version, _ = _register_version_without_metric(model_name)
+    MlflowClient().transition_model_version_stage(model_name, champion_version, stage="Production")
+
+    challenger_version, challenger_run = _register_version(model_name, miou=0.01)
+
+    with pytest.raises(ChampionMetricMissingError):
+        training_flow.promote_champion_task.fn(
+            {"best_val_miou": 0.01}, challenger_run, challenger_version, cfg
+        )
+
+    # The unmeasurable champion must still be the one at Production, not the challenger.
+    assert _production_version(model_name) == champion_version
 
 
 def test_disabled_skips_promotion(tmp_path):
