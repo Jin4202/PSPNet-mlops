@@ -203,10 +203,9 @@ here would just go stale.
 ## Benchmarking
 
 `scripts/load_test.py` fires a batch of concurrent requests at `/predict` and reports
-measured throughput (req/s) and latency percentiles. It works against a local server, a
-live Cloud Run URL, or an API started on a RunPod pod (see `docs/runpod_setup.md`).
-Every run is appended as a row to `results/benchmarks.csv`, and `--tag` labels which
-target it hit, so results stay comparable across targets and over time.
+measured throughput (req/s) and latency percentiles, appending each run as a row to
+`results/benchmarks.csv` (`--tag` labels the target) so results stay comparable across
+targets and over time.
 
 ```bash
 python scripts/load_test.py \
@@ -215,168 +214,12 @@ python scripts/load_test.py \
   --requests 100 --concurrency 10 --tag local
 ```
 
-**Concurrency.** `/predict` runs inference through `run_in_threadpool` instead of
-blocking the event loop inline, so the server can keep answering other requests like
-`/health` while inference is in flight. On my dev machine (11 CPU cores) that barely
-moved raw `/predict` throughput under load. I measured about 5 req/s at both concurrency
-1 and 12, before and after the change, with p99 latency still going from ~0.2s to ~2.4s.
-The cause is PyTorch defaulting to 5 intra-op threads per inference call, so concurrent
-requests mostly contend for the same cores instead of running in parallel. Getting work
-off the event loop does not help when the CPU is the bottleneck. Capping threads per
-request with `OMP_NUM_THREADS=1` measured about 14% more throughput at concurrency 12
-and about 29% worse single-request latency, a straight latency-versus-throughput
-tradeoff. I left it off, since the right setting depends on how much CPU the deployment
-actually has, and Cloud Run at `--cpu=2` has very different oversubscription math than
-an 11-core dev machine. Worth revisiting if concurrent throughput becomes a real
-bottleneck.
-
-**Live Cloud Run results.** 100 requests, `--cpu=2 --memory=2Gi`, same test image each
-run. Full rows are in `results/benchmarks.csv`.
-
-| Concurrency | Success | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|
-| 1 | 100/100 | 0.62 req/s | 1.59s / 1.92s / 1.92s |
-| 2 | 100/100 | 0.83 req/s | 1.67s / 23.92s / 23.92s |
-| 10 | 11/100 | 0.71 req/s | 14.10s / 15.69s / 15.69s (89 requests failed with HTTP 503) |
-
-Concurrency 1 is clean and predictable. At concurrency 2, throughput barely improves and
-one request spikes to about 24s. Cloud Run's own logs confirm this is a genuine cold
-start, not CPU contention: `Starting new instance. Reason: AUTOSCALING` fires right
-after that request, and the service actually churns through 3 instances over the course
-of the 100-request run despite never running more than 2 requests at once.
-
-At concurrency 10, the root cause is confirmed directly from Cloud Run's logs:
-**out-of-memory crash-looping**, not simple request-queue overload. The logs show
-explicit `Memory limit of 2048 MiB exceeded` errors, each followed by `the container
-instance was found to be using too much memory and was terminated`, then
-`Starting new instance`. Over the ~2.5 minutes this run took, that cycle repeated
-**9 times**: 9 OOM kills and 9 fresh cold-started instances, each one immediately hit by
-more of the still-queued concurrent requests before it could stabilize.
-`containerConcurrency` is 80 and `maxScale` is 20, so Cloud Run's own admission control
-was never the bottleneck; a full ResNet-50/PSPNet forward pass under 10-way concurrency
-simply doesn't fit in `--memory=2Gi`. The fix is straightforward: raise the memory limit
-(`gcloud run services update pspnet-serving --memory=4Gi` or higher) and re-run this
-benchmark, just not yet done here.
-
-**Live RunPod GPU results.** 100 requests, RTX PRO 4500, same test image each run. Full
-rows are in `results/benchmarks.csv`.
-
-| Concurrency | Success | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|
-| 1 | 100/100 | 0.85 req/s | 0.97s / 2.65s / 2.65s |
-| 2 | 100/100 | 2.04 req/s | 0.85s / 2.20s / 2.20s |
-| 10 | 100/100 | 7.45 req/s | 1.16s / 3.19s / 3.19s |
-
-Zero failures at any concurrency level, with no cold-start cliff and no dropped
-requests, unlike Cloud Run. Throughput scales cleanly (0.85 → 2.04 → 7.45 req/s), which
-fits one dedicated GPU taking on more in-flight requests without contention. One oddity
-is that latency is not monotonic with concurrency. Concurrency 1 (0.97s median, 2.65s
-p99) is worse than concurrency 2 (0.85s, 2.20s). A direct `/predict` call measured
-single-request inference at about 334ms, so most of the latency in every row above is
-request and network overhead through the RunPod proxy tunnel rather than GPU compute.
-That probably explains the ordering, with proxy jitter dominating over real concurrency
-effects at this scale, though I have not confirmed it against server-side logs. At
-concurrency 10, GPU inference does roughly **10x the throughput of Cloud Run** at the
-same concurrency (7.45 vs 0.71 req/s). The two are not directly comparable, since one is
-a dedicated GPU pod and the other an autoscaled `--cpu=2` container, but it does put a
-number on the gap between the two serving options I have now.
-
-*(Getting a clean run took some manual patching on the pod. The RunPod image's baked-in
-`torch==2.4.1+cu124` predates this GPU's architecture and threw `CUDA error: no kernel
-image is available for execution on the device` on every request, so I installed
-`torch==2.12.0` and `torchvision==0.27.0` to match `requirements.txt`. `fastapi` and
-`uvicorn` were missing entirely, since the serving app had never run on this image
-before. Both trace back to the same cause. `runpod/Dockerfile` has not been rebuilt
-since `requirements.txt` picked up those deps and versions. A rebuild and repush would
-save future pods from the same patching, see `docs/runpod_setup.md`.)*
-
-**Max concurrency sweep (2026-08-15).** Pushed to find where the serving deployment
-actually caps out, on a different RunPod pod/GPU (**RTX PRO 4000 Blackwell**, 24467 MiB
-VRAM) than the earlier table above, so treat this as a separate data point rather than a
-continuation of it. All runs tagged `runpod-gpu-concurrency-sweep` in
-`results/benchmarks.csv`; `scripts/load_test.py` was updated to size its own
-`httpx` connection pool to `--concurrency` (it previously defaulted to 100 max
-connections, which would have silently capped anything tested above that).
-
-| Concurrency | Success | Failure | Throughput | Latency (median / p99 / max) |
-|---|---|---|---|---|
-| 20 | 200/200 | 0% | 13.15 req/s | 1.29s / 3.15s / 3.35s |
-| 40 | 200/200 | 0% | 15.08 req/s | 2.14s / 4.93s / 5.74s |
-| 60 | 200/200 | 0% | 16.18 req/s | 3.15s / 6.99s / 7.39s |
-| 80 | 200/200 | 0% | 15.32 req/s | 3.82s / 7.96s / 8.84s |
-| 100 | 200/200 | 0% | 15.26 req/s | 4.82s / 11.27s / 11.50s |
-| 175 | 350/350 | 0% | 16.85 req/s | 7.23s / 18.26s / 19.00s |
-| 200 | 400/400 | 0% | 17.53 req/s | 8.02s / 21.01s / 22.03s |
-| 500 | 795/800 | 0.6% | 17.53 req/s | 21.13s / 40.74s / 45.63s |
-| 1000 | 1361/1500 | 9.3% | 20.09 req/s | 39.81s / 70.29s / 74.65s |
-| 2000 | 1767/3000 | 41.1% | 27.01 req/s | 59.50s / 110.01s / 111.01s |
-| 3000 | 1497/4500 | 66.7% | 33.40 req/s | 51.75s / 107.48s / 108.88s |
-
-Throughput scales cleanly up to concurrency 20, then flattens hard right at 40
-(15.08 req/s) and barely moves through 100 (15.26 req/s) while latency keeps climbing in
-lockstep with concurrency (median 2.14s → 4.82s) — the signature of requests queueing
-rather than more work getting done. `/predict` (`app/main.py`) runs inference via
-Starlette's `run_in_threadpool`, whose default AnyIO thread pool caps in-flight work at
-~40 threads, and nothing in `app/main.py` or `app/model_loader.py` raises that limit or
-adds its own batching/semaphore around the single shared model instance. So **~40 is the
-practical ceiling for keeping latency reasonable** (p99 still under 5s) — past that,
-extra concurrency just buys client-side wait time, not more throughput, at this scale.
-
-That 40-request ceiling turned out to only be the *soft* one. Pushing much further
-(concurrency 175 through 3000, client `--timeout` raised from the 30s default up to 240s
-so these failures aren't just the client giving up early — every failure was a
-connection-level error with no response at all, not a clean HTTP error code from the
-server) eventually does get more real work out of the box, at the cost of both latency
-and reliability. Throughput keeps climbing well past 40 (up to 33 req/s at concurrency
-3000), so the server is doing genuinely more concurrent work at these levels, not just
-queueing —
-`nvidia-smi` on the pod confirmed it: GPU utilization was ~0% up through concurrency
-~150, started registering (up to 43%) around 200, and climbed to 30-53% by 2000-3000.
-VRAM barely moved the entire time, from ~1.5GB idle to ~1.8GB at the highest concurrency
-tested, out of 24.4GB total — nowhere close to the ceiling. So neither GPU compute nor
-VRAM was the limiting factor at any concurrency tested; the failures above are best
-explained by connection/thread contention (the RunPod proxy tunnel, the OS, or Python's
-own async/thread scheduling) rather than the model or the GPU running out of room.
-*(That `nvidia-smi` reading was a single manual check taken after each burst had already
-finished, not a trace spanning the run — see the re-measurement below, which confirms the
-same "GPU isn't the bottleneck" conclusion but on solid evidence.)*
-
-**A real crash, not reproduced.** At concurrency 150 (before the table above was
-gathered), one run failed **300/300** with every request returning `502` from the RunPod
-proxy. `ps aux` on the pod showed the `uvicorn` process was completely gone — not hung,
-not a zombie, just absent — and `nvidia-smi` showed 0 GPU processes and only 2 MiB VRAM
-used. `free -h` showed 108Gi of 125Gi still available, ruling out an OOM kill. After
-restarting the server, a binary search (120, 135, 142, 148 — all 100% success) narrowed
-the crash to a razor-thin band around 150, but **re-testing concurrency 150 itself
-succeeded cleanly (300/300)**, and it never recurred at any higher concurrency tested
-(175 through 3000). That points to a nondeterministic race rather than a hard resource
-ceiling — consistent with there being **zero locking, semaphore, or queueing around
-concurrent calls into the single shared GPU model instance** (`app/model_loader.py`,
-invoked via `run_in_threadpool` from every request). The leading hypothesis is a
-CUDA/cuDNN thread-safety race under a specific timing of near-simultaneous
-`model.forward()` calls, but this wasn't confirmed — `dmesg` is permission-restricted
-inside the container, and nothing was logging `uvicorn`'s own output to a file at the
-time, so no crash traceback survived. Documented here as a real, observed, but
-unconfirmed-root-cause risk rather than chased further; **worth an explicit concurrency
-guard (a semaphore around inference, or a bounded queue) before this deployment is
-trusted for real public traffic**, since nothing today prevents it from happening again.
-
-**Bottom line.** There is no single clean "max concurrency" number — there are two
-different ceilings depending on what you're optimizing for: **~40** for interactive-grade
-latency (p99 under 5s), and **~500-1000** before failures become a meaningful share of
-traffic (0.6%–9.3%). Above that, failure rate climbs steeply (41% at 2000, 67% at 3000)
-even though the process itself stayed up. The one full crash observed (concurrency 150)
-is a known-but-rare risk given the complete lack of concurrency protection in the serving
-code today, not a number to read as a hard wall.
-
-**Throughput-saturation re-measurement with continuous GPU logging (2026-08-16).** The
-sweep above's GPU reading came from one-off manual `nvidia-smi` checks, which risk
-catching the GPU after a burst has already drained rather than during it. Re-ran a
-finer-grained concurrency ladder (5 through 100) on the same pod/GPU, this time with
-`nvidia-smi --query-gpu=... -l 1` logging continuously in the background for the entire
-session and each run's window sliced out of that trace afterward by timestamp — no manual
-timing involved, and a real external client (same machine/network path as the original
-sweep above) so these numbers are directly comparable to that table:
+**Throughput saturation on RunPod GPU** (RTX PRO 4000 Blackwell, 24467 MiB VRAM,
+2026-08-16). Ran a concurrency ladder (5 through 100) against a live pod with
+`nvidia-smi --query-gpu=... -l 1` logging continuously in the background for the whole
+session, each run's window sliced out of that trace by timestamp afterward — not a single
+manual `nvidia-smi` check, which risks catching the GPU after a burst has already
+drained:
 
 | Concurrency | Throughput | GPU util (mean / max) | VRAM used |
 |---|---|---|---|
@@ -392,13 +235,9 @@ sweep above) so these numbers are directly comparable to that table:
 | 100 | 18.28 req/s | 8.6% / 37%  | 2604 MiB |
 
 Throughput rises with diminishing returns and soft-plateaus around concurrency 60-80
-(~18-19 req/s) rather than the original sweep's sharper-looking knee at 40 — that
-difference is itself informative: the earlier 20/40/60/80/100 ladder was coarse enough to
-make a gradual curve look like a hard knee. GPU utilization stays low at every point (mean
-1.4%-11.4%, max never above 37%), and VRAM sits completely flat at 2604 MiB out of 24467
-MiB (~11%) regardless of load. This confirms, now on continuously-sampled evidence and a
-real network client rather than a mistimed single check, that **the GPU is not the
-bottleneck** at any concurrency tested here.
+(~18-19 req/s). GPU utilization stays low at every point (mean 1.4%-11.4%, max never above
+37%), and VRAM sits completely flat at 2604 MiB out of 24467 MiB (~11%) regardless of
+load — **the GPU is not the bottleneck** at any concurrency tested here.
 
 A second run with the client co-located on the pod itself (looping back through the proxy
 instead of over the public internet — not directly comparable to the table above, but
@@ -408,10 +247,10 @@ picture: throughput rose faster (peaking ~52 req/s around concurrency 40-60) and
 brief maxes up to 71%) and VRAM stayed pinned at the same 2604 MiB. A curve that rises,
 peaks, and then falls while the compute resource underneath it stays underutilized is the
 signature of contention, not a hard ceiling — most likely CPU-side thread/GIL contention or
-a race around the single shared model instance (`app/model_loader.py`) being invoked
-concurrently via `run_in_threadpool` with no lock, semaphore, or queue around it, consistent
-with the unreproduced crash at concurrency 150 documented above. Adding an explicit
-concurrency guard around inference remains the natural next step to confirm and fix this.
+a race around the single shared model instance (`app/model_loader.py`), which is invoked
+concurrently via `run_in_threadpool` with no lock, semaphore, or queue around it. Adding an
+explicit concurrency guard around inference is the natural next step to confirm and fix
+this.
 
 ---
 
