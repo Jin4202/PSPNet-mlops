@@ -337,6 +337,9 @@ tested, out of 24.4GB total — nowhere close to the ceiling. So neither GPU com
 VRAM was the limiting factor at any concurrency tested; the failures above are best
 explained by connection/thread contention (the RunPod proxy tunnel, the OS, or Python's
 own async/thread scheduling) rather than the model or the GPU running out of room.
+*(That `nvidia-smi` reading was a single manual check taken after each burst had already
+finished, not a trace spanning the run — see the re-measurement below, which confirms the
+same "GPU isn't the bottleneck" conclusion but on solid evidence.)*
 
 **A real crash, not reproduced.** At concurrency 150 (before the table above was
 gathered), one run failed **300/300** with every request returning `502` from the RunPod
@@ -365,6 +368,53 @@ traffic (0.6%–9.3%). Above that, failure rate climbs steeply (41% at 2000, 67%
 even though the process itself stayed up. The one full crash observed (concurrency 150)
 is a known-but-rare risk given the complete lack of concurrency protection in the serving
 code today, not a number to read as a hard wall.
+
+**Throughput-saturation re-measurement with continuous GPU logging (2026-08-16).** The
+sweep above's GPU reading came from one-off manual `nvidia-smi` checks, which risk
+catching the GPU after a burst has already drained rather than during it. Re-ran a
+finer-grained concurrency ladder (5 through 100) on the same pod/GPU, this time with
+`nvidia-smi --query-gpu=... -l 1` logging continuously in the background for the entire
+session and each run's window sliced out of that trace afterward by timestamp — no manual
+timing involved. (Client ran on the pod itself this round, looping back through the
+external proxy rather than over the public internet like the sweep above, so the absolute
+throughput numbers here are higher and not directly comparable to that table — what
+matters for this measurement is the shape of the curve and the GPU readings alongside it.)
+
+| Concurrency | Throughput | GPU util (mean / max) | VRAM used |
+|---|---|---|---|
+| 5   | 17.81 req/s | 5.5% / 11%  | 2604 MiB |
+| 10  | 30.72 req/s | 12.3% / 26% | 2604 MiB |
+| 15  | 39.35 req/s | 29.3% / 37% | 2604 MiB |
+| 20  | 43.40 req/s | 19.0% / 33% | 2604 MiB |
+| 25  | 42.16 req/s | 13.2% / 26% | 2604 MiB |
+| 30  | 46.71 req/s | 26.8% / 55% | 2604 MiB |
+| 40  | 52.09 req/s | 26.4% / 44% | 2604 MiB |
+| 60  | 51.76 req/s | 30.0% / 59% | 2604 MiB |
+| 80  | 47.12 req/s | 27.8% / 62% | 2604 MiB |
+| 100 | 45.59 req/s | 24.0% / 71% | 2604 MiB |
+
+Throughput growth is steep through concurrency 15 (+28% per step), tapers by 20 (+10%),
+and is essentially flat-to-negative from 25 on — it **peaks at concurrency 40-60** (~52
+req/s) and then **declines** through 80 and 100 (down to 45.59 req/s), rather than merely
+plateauing. GPU utilization stays low throughout: mean never exceeds 30%, and even the max
+observed at any single sample only reaches 71% (at concurrency 100, the noisiest point).
+VRAM sits completely flat at 2604 MiB out of 24467 MiB (~11%) at every concurrency level
+tested — no growth at all with load. (Sample counts are thin at the low end — 2-4
+one-second GPU samples for concurrency 5-20, since those bursts finish in a few seconds —
+but the well-sampled high end, concurrency 80-100, 17-22 samples, shows the same
+consistently-low utilization pattern.)
+
+This confirms, now on continuously-sampled evidence rather than a mistimed single check,
+that **the GPU is not the bottleneck** — it's never close to saturated at any concurrency
+tested. But it also surfaces something the original sweep's coarser 20/40/60/80/100 ladder
+didn't show: throughput doesn't just cap out, it **turns over** past concurrency ~60, while
+GPU usage stays modest the whole time. A curve that rises, peaks, and then falls while the
+compute resource underneath it stays underutilized is the signature of contention, not a
+hard ceiling — most likely CPU-side thread/GIL contention or a race around the single
+shared model instance (`app/model_loader.py`) being invoked concurrently via
+`run_in_threadpool` with no lock, semaphore, or queue around it, consistent with the
+unreproduced crash at concurrency 150 documented above. Adding an explicit concurrency
+guard around inference remains the natural next step to confirm and fix this.
 
 ---
 
